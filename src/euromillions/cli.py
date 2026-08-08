@@ -8,6 +8,7 @@ Interface de linha de comandos.
     python -m euromillions.cli valor [--jackpot 100e6]
     python -m euromillions.cli estrelas
     python -m euromillions.cli carteira
+    python -m euromillions.cli comparativo
     python -m euromillions.cli backtest
     python -m euromillions.cli jogar [--bilhetes 5] [--jackpot 100e6]
     python -m euromillions.cli relatorio
@@ -235,6 +236,51 @@ def cmd_carteira(args) -> None:
     print("  Reduz a probabilidade de sair de mãos vazias. É grátis: custa o mesmo.")
 
 
+def cmd_comparativo(args) -> None:
+    dr, bdf = ds.load_draws(), ds.load_breakdown()
+    master = ds.build_master()
+    model, _ = fit_popularity_model(master)
+    try:
+        star_model = stars.fit_star_model(dr, bdf)
+    except ValueError:
+        star_model = None
+
+    _hr("POPULARIDADE MEDIDA DE CADA ESTRATÉGIA")
+    pops = bt.measure_strategy_popularity(model, star_model)
+    for k, v in pops.items():
+        print(f"  {k:<12} {v:.4f}x")
+
+    _hr(f"CONFRONTO COM TODO O HISTÓRICO — {len(dr)} sorteios (2004→hoje)")
+    print(f"{args.reps} carteiras independentes por estratégia × {args.bilhetes} apostas,")
+    print("contra os prémios históricos efetivamente pagos, era a era.\n")
+    r = bt.full_history_comparison(
+        dr, bdf, n_tickets=args.bilhetes, n_reps=args.reps, popularity=pops
+    )
+    print(r["resumo"].to_string(index=False))
+
+    _hr("ATENÇÃO À COLUNA ±95%")
+    print("  O retorno realizado é dominado por acontecimentos raríssimos.")
+    print("  Um único 5+1 desloca o total mais do que toda a diferença entre")
+    print("  estratégias. As margens acima mostram que a comparação bruta")
+    print("  NÃO separa as estratégias — quem 'ganhou' teve sorte, não método.")
+
+    _hr("PRÉMIOS POR ESCALÃO (acumulado)")
+    print(r["escaloes"].to_string())
+
+    _hr("COMPARAÇÃO ANALÍTICA — variância reduzida, esta separa")
+    print(bt.analytic_comparison(bdf, pops, jackpot_eur=args.jackpot).to_string(index=False))
+
+    _hr("POR ERA")
+    print(r["por_era"].pivot_table(
+        index=["era", "estrelas", "sorteios"], columns="estratégia",
+        values="P(nada)").to_string())
+
+    _hr("A ESCALA DO PROBLEMA")
+    n_bets = int(r["resumo"]["apostas"].iloc[0])
+    for k, v in bt.jackpot_expectation(n_bets).items():
+        print(f"  {k:<30} {v}")
+
+
 def cmd_valor(args) -> None:
     try:
         bd = ds.load_breakdown()
@@ -368,7 +414,7 @@ def cmd_jogar(args) -> None:
 
 def cmd_relatorio(args) -> None:
     for fn in (cmd_aleatoriedade, cmd_maquinas, cmd_popularidade, cmd_estrelas,
-               cmd_valor, cmd_carteira, cmd_backtest):
+               cmd_valor, cmd_carteira, cmd_backtest, cmd_comparativo):
         try:
             fn(args)
         except FileNotFoundError as e:
@@ -410,6 +456,12 @@ def main(argv: list[str] | None = None) -> None:
     e = sub.add_parser("estrelas", help="popularidade medida das estrelas")
     e.set_defaults(func=cmd_estrelas)
 
+    cp = sub.add_parser("comparativo", help="modelo vs apostas avulsas, todo o histórico")
+    cp.add_argument("--reps", type=int, default=250)
+    cp.add_argument("--bilhetes", type=int, default=5)
+    cp.add_argument("--jackpot", type=float, default=60e6)
+    cp.set_defaults(func=cmd_comparativo)
+
     ca = sub.add_parser("carteira", help="reduzir a probabilidade de não ganhar nada")
     ca.add_argument("--bilhetes", type=int, default=5)
     ca.add_argument("--sim", type=int, default=150000)
@@ -430,6 +482,7 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--reps", type=int, default=150)
     r.add_argument("--bilhetes", type=int, default=5)
     r.add_argument("--seed", type=int, default=1)
+    r.add_argument("--jackpot", type=float, default=60e6)
     r.set_defaults(func=cmd_relatorio)
 
     args = p.parse_args(argv)

@@ -36,6 +36,21 @@ três primeiros por inteiro e não finge sobre o quarto.
 Combinadas: **+36% no valor esperado** e **P(algum prémio) de 19% para
 36%**, ao mesmo preço e com a mesma probabilidade de jackpot.
 
+### Modelo vs apostas avulsas, 1970 sorteios reais
+
+Confronto com todo o histórico desde 2004 — 2,46 milhões de apostas por
+estratégia ([`docs/06`](docs/06-comparativo-historico.md)):
+
+| | acerta mais? | EV (jackpot €60M) | P(nada) |
+|---|---|---:|---:|
+| datas | não | €0,699 | 0,677 |
+| aleatória | não | €0,759 | 0,663 |
+| **otimizada** | não | **€0,841 (+20,3%)** | **0,639** |
+
+O jackpot **nunca saiu** — em nenhuma estratégia, em 22 anos simulados 250
+vezes. Jogando 5 apostas por sorteio, esperar um jackpot leva **269 mil
+anos**.
+
 ---
 
 ## A ideia
@@ -79,6 +94,7 @@ python -m euromillions.cli maquinas            # equipamento e viés por segment
 python -m euromillions.cli popularidade        # modelo de escolha humana (números)
 python -m euromillions.cli estrelas            # popularidade medida das estrelas
 python -m euromillions.cli carteira            # reduzir P(não ganhar nada)
+python -m euromillions.cli comparativo         # modelo vs avulso, todo o histórico
 python -m euromillions.cli valor               # EV e ponto de equilíbrio
 python -m euromillions.cli backtest            # walk-forward + fora da amostra
 python -m euromillions.cli jogar --jackpot 111e6 --bilhetes 5
@@ -126,9 +142,10 @@ docs/
   03-a-brecha-real.md    onde está a brecha e qual é o seu tamanho
   04-resultados.md       todos os números
   05-segunda-ronda.md    estrelas, carteira, backtest walk-forward
+  06-comparativo-historico.md  modelo vs apostas avulsas, 1970 sorteios
 ```
 
-`pytest tests/ -q` → 40 testes. As probabilidades oficiais
+`pytest tests/ -q` → 45 testes. As probabilidades oficiais
 (1 em 139.838.160) são calculadas de raiz e verificadas.
 
 ---

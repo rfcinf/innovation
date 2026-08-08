@@ -23,6 +23,7 @@ from scipy import stats
 
 from . import config
 from .dataset import MAIN_COLS
+from .ev import TIER_ELASTICITY as _EV_ELASTICITY
 from .popularity import design_matrix, fit_popularity_model
 
 
@@ -363,6 +364,281 @@ def walk_forward(
     out.attrs["hits"] = hits
     out.attrs["periodo"] = f"{d['date'].min()} → {d['date'].max()} ({len(d)} sorteios)"
     return out
+
+
+# ---------------------------------------------------------------------------
+# Comparativo sobre TODO o histórico: modelo preditivo vs apostas avulsas
+# ---------------------------------------------------------------------------
+
+def full_history_comparison(
+    draws: pd.DataFrame,
+    breakdown: pd.DataFrame,
+    strategies: tuple[str, ...] = ("datas", "sobreposta", "aleatoria", "otimizada"),
+    n_tickets: int = 5,
+    n_reps: int = 300,
+    seed: int = 7,
+    popularity: dict[str, float] | None = None,
+) -> dict:
+    """
+    Confronta cada estratégia com os 1970 sorteios reais desde 2004.
+
+    CORREÇÃO CRÍTICA face ao backtest da era atual: o número de estrelas
+    mudou duas vezes (9 → 11 → 12). Gerar bilhetes com a estrela 12 num
+    sorteio de 2005 produziria apostas impossíveis, que nunca ganhariam
+    nada nos escalões com estrelas — e enviesaria a comparação inteira a
+    favor de quem calhasse jogar estrelas baixas. Aqui o histórico é
+    processado era a era, cada uma com a matriz que estava em vigor.
+
+    Devolve duas contabilidades, e a diferença entre elas é o ponto central:
+
+    * **bruta** — usa o prémio histórico efetivamente pago em cada escalão
+      de cada sorteio. É o que teria acontecido *literalmente*. Não
+      distingue estratégias no valor do prémio, porque esses prémios já
+      estão divididos pelos vencedores que realmente existiram.
+
+    * **ajustada** — corrige cada prémio pelo fator de partilha que a
+      popularidade da nossa combinação implicaria (prémio × π^-elasticidade,
+      como em `ev.py`). É um contrafactual modelado, não uma observação, e
+      está identificado como tal. É a única forma de responder a "quanto
+      teríamos recebido", já que o histórico não o pode revelar.
+    """
+    popularity = popularity or {}
+    rng = np.random.default_rng(seed)
+
+    piv_prize = breakdown.pivot_table(
+        index="date", columns="tier", values="prize_eur", aggfunc="first"
+    )
+    tiers = list(config.TIERS)
+
+    agg: dict[str, dict] = {
+        s: {
+            "custo": 0.0, "bruto": 0.0, "ajustado": 0.0,
+            "n_nada": 0, "n_carteiras": 0, "n_apostas": 0,
+            "hits": {}, "maior_premio": 0.0, "melhor_escalao": None,
+            "rep_ret": [], "rep_nada": [],
+        }
+        for s in strategies
+    }
+    por_era: list[dict] = []
+
+    for era in config.ERAS:
+        d = draws[draws["era"] == era.name].reset_index(drop=True)
+        if len(d) == 0:
+            continue
+        pool = era.star_pool
+        drawn_m = d[MAIN_COLS].to_numpy(int)
+        drawn_s = d[["s1", "s2"]].to_numpy(int)
+
+        prize_lookup = {
+            t.label: (
+                np.nan_to_num(piv_prize[t.label].reindex(d["date"]).to_numpy(float), nan=0.0)
+                if t.label in piv_prize else np.zeros(len(d))
+            )
+            for t in tiers
+        }
+
+        for strat in strategies:
+            pi = popularity.get(strat, 1.0)
+            era_bruto = era_ajust = 0.0
+            era_nada = 0
+
+            for _ in range(n_reps):
+                mains, stars = _make_portfolio(strat, rng, n_tickets, pool)
+
+                match_m = np.zeros((len(d), n_tickets), dtype=np.int8)
+                match_s = np.zeros((len(d), n_tickets), dtype=np.int8)
+                for j in range(n_tickets):
+                    match_m[:, j] = np.isin(drawn_m, mains[j]).sum(axis=1)
+                    match_s[:, j] = np.isin(drawn_s, stars[j]).sum(axis=1)
+
+                bruto = np.zeros(len(d))
+                ajust = np.zeros(len(d))
+                any_win = np.zeros(len(d), dtype=bool)
+
+                for t in tiers:
+                    hit = (match_m == t.mains) & (match_s == t.stars)
+                    if not hit.any():
+                        continue
+                    cnt = hit.sum(axis=1)
+                    a = agg[strat]
+                    a["hits"][t.label] = a["hits"].get(t.label, 0) + int(cnt.sum())
+                    prizes = prize_lookup[t.label]
+                    bruto += cnt * prizes
+                    # Contrafactual: a nossa combinação teria sido partilhada
+                    # por mais ou menos gente, conforme a sua popularidade.
+                    elast = _EV_ELASTICITY.get(t.label, 0.5)
+                    ajust += cnt * prizes * (pi ** (-elast))
+                    any_win |= cnt > 0
+                    best = float((cnt * prizes).max())
+                    if best > a["maior_premio"]:
+                        a["maior_premio"] = best
+                        a["melhor_escalao"] = t.label
+
+                a = agg[strat]
+                cost = len(d) * n_tickets * config.TICKET_PRICE_EUR
+                a["custo"] += cost
+                a["bruto"] += float(bruto.sum())
+                a["ajustado"] += float(ajust.sum())
+                a["n_nada"] += int((~any_win).sum())
+                a["n_carteiras"] += len(d)
+                a["n_apostas"] += len(d) * n_tickets
+                a["rep_ret"].append(float(bruto.sum() / cost))
+                a["rep_nada"].append(float((~any_win).mean()))
+
+                era_bruto += float(bruto.sum())
+                era_ajust += float(ajust.sum())
+                era_nada += int((~any_win).sum())
+
+            por_era.append(
+                {
+                    "era": era.name,
+                    "estrelas": pool,
+                    "periodo": f"{d['date'].min()} → {d['date'].max()}",
+                    "sorteios": len(d),
+                    "estratégia": strat,
+                    "retorno_€/€": round(era_bruto / (len(d) * n_tickets * config.TICKET_PRICE_EUR * n_reps), 4),
+                    "P(nada)": round(era_nada / (len(d) * n_reps), 4),
+                }
+            )
+
+    rows = []
+    for strat in strategies:
+        a = agg[strat]
+        ret = np.asarray(a["rep_ret"])
+        nada = np.asarray(a["rep_nada"])
+        rows.append(
+            {
+                "estratégia": strat,
+                "apostas": a["n_apostas"],
+                "custo_€": round(a["custo"], 0),
+                "ganho_bruto_€": round(a["bruto"], 0),
+                "retorno_bruto_€/€": round(a["bruto"] / a["custo"], 4),
+                "±95%": round(1.96 * ret.std(ddof=1) / np.sqrt(len(ret)), 4),
+                "retorno_ajustado_€/€": round(a["ajustado"] / a["custo"], 4),
+                "P(nada)": round(float(nada.mean()), 4),
+                "±95%_nada": round(1.96 * nada.std(ddof=1) / np.sqrt(len(nada)), 4),
+                "prémios": sum(a["hits"].values()),
+                "maior_prémio_€": round(a["maior_premio"], 2),
+                "melhor_escalão": a["melhor_escalao"],
+            }
+        )
+
+    return {
+        "resumo": pd.DataFrame(rows),
+        "por_era": pd.DataFrame(por_era),
+        "escaloes": pd.DataFrame(
+            {s: agg[s]["hits"] for s in strategies}
+        ).reindex([t.label for t in tiers]).fillna(0).astype(int),
+        "n_reps": n_reps,
+        "n_tickets": n_tickets,
+    }
+
+
+def analytic_comparison(
+    breakdown: pd.DataFrame,
+    popularity: dict[str, float],
+    star_pool: int = 12,
+    jackpot_eur: float = 60e6,
+    sales: float = 24e6,
+    n_bets: int = 2_462_500,
+) -> pd.DataFrame:
+    """
+    Comparação com variância reduzida — a que consegue mesmo separar as
+    estratégias.
+
+    PORQUE É PRECISA ESTA SEGUNDA TABELA
+    ------------------------------------
+    O retorno realizado num backtest é dominado por acontecimentos
+    raríssimos. Em 2,46 milhões de apostas simuladas por estratégia, o
+    escalão 5+1 (€300 mil a €500 mil) foi atingido **uma vez ou nenhuma**, e
+    o jackpot **nunca**. Um único acerto desses desloca o retorno total em
+    mais de 0,08 €/€ — mais do que toda a diferença que queremos medir.
+
+    Foi exatamente isso que aconteceu: a estratégia aleatória apanhou um
+    5+1 de €508 mil e "ganhou" o comparativo bruto, com uma margem de erro
+    de ±0,19 que cobre todas as outras. Ler essa tabela como se mostrasse
+    superioridade seria confundir sorte com método — precisamente o erro
+    que este projeto existe para não cometer.
+
+    A solução é padrão em simulação: substituir o resultado realizado pelo
+    seu valor esperado condicional, calculado analiticamente a partir das
+    probabilidades exatas de cada escalão. Elimina-se a variância da cauda
+    sem introduzir enviesamento, e o efeito da popularidade — que é o que
+    distingue as estratégias — passa a ser visível.
+    """
+    from .ev import empirical_tier_prizes, expected_value
+
+    try:
+        prizes = empirical_tier_prizes(breakdown)
+    except Exception:
+        prizes = None
+
+    rows = []
+    for strat, pi in popularity.items():
+        r = expected_value(jackpot_eur, sales, pi, star_pool, prizes)
+        rows.append(
+            {
+                "estratégia": strat,
+                "popularidade": round(pi, 4),
+                "EV_por_aposta_€": round(r.ev_liquido, 4),
+                "retorno_€/€": round(r.retorno_por_euro, 4),
+                "fatia_do_jackpot_%": round(100 * r.fator_partilha, 1),
+                "EV_total_€": round(r.ev_liquido * n_bets, 0),
+            }
+        )
+    out = pd.DataFrame(rows)
+    base = out.loc[out["estratégia"] == "datas", "EV_por_aposta_€"]
+    if len(base):
+        out["ganho_vs_datas_%"] = (100 * (out["EV_por_aposta_€"] / base.iloc[0] - 1)).round(1)
+    return out
+
+
+def measure_strategy_popularity(
+    model,
+    star_model=None,
+    strategies: tuple[str, ...] = ("datas", "sobreposta", "aleatoria", "otimizada"),
+    n_tickets: int = 5,
+    n_reps: int = 300,
+    star_pool: int = 12,
+    seed: int = 99,
+) -> dict[str, float]:
+    """
+    Mede a popularidade média das carteiras que cada estratégia produz.
+
+    Não se assume um valor: gera-se centenas de carteiras por estratégia e
+    passa-se cada bilhete pelos modelos estimados (números e estrelas).
+    """
+    from .optimizer import star_pair_popularity
+
+    rng = np.random.default_rng(seed)
+    out: dict[str, float] = {}
+    for strat in strategies:
+        pops = []
+        for _ in range(n_reps):
+            m, s = _make_portfolio(strat, rng, n_tickets, star_pool)
+            pm = model.predict_popularity(m)
+            ps = np.array(
+                [star_pair_popularity(tuple(x), star_pool, star_model) for x in s]
+            )
+            pops.append(float((pm * ps).mean()))
+        out[strat] = float(np.mean(pops))
+    return out
+
+
+def jackpot_expectation(n_bets: int, star_pool: int = 12) -> dict:
+    """
+    Quanto tempo é preciso para *esperar* um jackpot — a escala real do
+    problema, que nenhum backtest de 22 anos consegue mostrar.
+    """
+    p = config.JACKPOT.probability(star_pool)
+    esperados = n_bets * p
+    return {
+        "apostas_simuladas": n_bets,
+        "jackpots_esperados": round(esperados, 4),
+        "P(pelo menos um)": round(1 - (1 - p) ** n_bets, 4),
+        "apostas_para_1_esperado": round(1 / p),
+        "anos_jogando_5_por_sorteio": round(1 / p / (5 * 104)),
+    }
 
 
 def jackpot_sharing_reality(master: pd.DataFrame) -> pd.DataFrame:

@@ -347,3 +347,77 @@ def test_cobertura_maxima_com_5_bilhetes():
     cov = pf.coverage_score(tickets)
     assert cov["numeros_distintos"] == 25
     assert cov["sobreposicao_maxima"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Comparativo sobre todo o historico
+# ---------------------------------------------------------------------------
+
+def test_carteiras_respeitam_o_pool_de_estrelas_da_era():
+    """
+    Em 2004-2011 so existiam 9 estrelas. Gerar um bilhete com a estrela 12
+    nessa era produz uma aposta impossivel, que nunca ganharia nos escaloes
+    com estrelas — e enviesaria o comparativo a favor de quem calhasse
+    jogar estrelas baixas. Este teste garante a correcao por era.
+    """
+    from euromillions.backtest import _make_portfolio
+
+    rng = np.random.default_rng(3)
+    for pool in (9, 11, 12):
+        for strat in ("datas", "sobreposta", "aleatoria", "otimizada"):
+            _, stars_arr = _make_portfolio(strat, rng, 5, pool)
+            assert stars_arr.max() <= pool, f"{strat} com pool={pool}"
+            assert stars_arr.min() >= 1
+
+
+def test_carteiras_sao_apostas_validas():
+    from euromillions.backtest import _make_portfolio
+
+    rng = np.random.default_rng(4)
+    for strat in ("datas", "sobreposta", "aleatoria", "otimizada"):
+        mains, stars_arr = _make_portfolio(strat, rng, 5, 12)
+        assert mains.shape == (5, config.MAIN_PICK)
+        assert stars_arr.shape == (5, config.STAR_PICK)
+        for row in mains:
+            assert len(set(row.tolist())) == config.MAIN_PICK
+            assert 1 <= row.min() and row.max() <= config.MAIN_POOL
+        for row in stars_arr:
+            assert len(set(row.tolist())) == config.STAR_PICK
+
+
+def test_estrategia_datas_so_usa_numeros_ate_31():
+    from euromillions.backtest import _make_portfolio
+
+    rng = np.random.default_rng(5)
+    mains, stars_arr = _make_portfolio("datas", rng, 5, 12)
+    assert mains.max() <= 31
+    assert stars_arr.max() <= 9
+
+
+def test_comparacao_analitica_ordena_pela_popularidade():
+    """
+    Menor popularidade tem de dar maior EV — se esta monotonia falhar, o
+    motor de EV ou a tabela de elasticidades estao errados.
+    """
+    import pandas as pd
+
+    from euromillions.backtest import analytic_comparison
+
+    pops = {"popular": 2.0, "media": 1.0, "impopular": 0.5}
+    # Sem dados de quebra de premios, recorre aos precos de recurso.
+    out = analytic_comparison(pd.DataFrame(), pops, jackpot_eur=100e6)
+    evs = out.set_index("estratégia")["EV_por_aposta_€"]
+    assert evs["impopular"] > evs["media"] > evs["popular"]
+
+
+def test_escala_do_jackpot():
+    """
+    Numero que da a dimensao real: jogando 5 apostas por sorteio, sao
+    precisos centenas de milhares de anos para ESPERAR um jackpot.
+    """
+    from euromillions.backtest import jackpot_expectation
+
+    r = jackpot_expectation(2_000_000)
+    assert r["apostas_para_1_esperado"] == 139_838_160
+    assert r["anos_jogando_5_por_sorteio"] > 100_000
+    assert r["jackpots_esperados"] < 0.02
