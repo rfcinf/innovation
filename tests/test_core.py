@@ -524,3 +524,63 @@ def test_tabela_escrita_a_mao_estava_inflacionada():
     """
     for label in ("4+2", "4+1", "4+0", "3+2", "3+1", "3+0", "2+2", "2+1", "2+0", "1+2"):
         assert ev.TIER_ELASTICITY[label] < ev.TIER_ELASTICITY_HANDMADE[label]
+
+
+# ---------------------------------------------------------------------------
+# Padroes e o espaco de combinacoes
+# ---------------------------------------------------------------------------
+
+def test_universo_tem_o_tamanho_certo():
+    from euromillions import patterns
+
+    U = patterns.universe()
+    assert len(U) == 2_118_760
+    assert U.shape[1] == config.MAIN_PICK
+
+
+def test_probabilidade_de_familia_e_contagem_de_membros():
+    """
+    A ideia central: uma familia e "rara" exatamente na proporcao dos seus
+    membros. P(familia) = nº de membros / 2.118.760. Nao ha nada alem disso,
+    e por isso escolher dentro de uma familia rara NAO baixa a probabilidade
+    do bilhete.
+    """
+    from euromillions import patterns
+
+    d = patterns.exact_distribution("nums_ate_31")
+    assert d["combinacoes"].sum() == 2_118_760
+    assert d["probabilidade"].sum() == pytest.approx(1.0)
+    for r in d.itertuples():
+        assert r.probabilidade == pytest.approx(r.combinacoes / 2_118_760)
+
+
+def test_familia_de_aniversarios_bate_com_a_combinatoria():
+    """Os 5 numeros <=31: C(31,5)/C(50,5) = 8,02%."""
+    from math import comb
+
+    from euromillions import patterns
+
+    d = patterns.exact_distribution("nums_ate_31").set_index("valor")
+    assert d.loc[5, "combinacoes"] == comb(31, 5)
+    assert d.loc[5, "probabilidade"] == pytest.approx(comb(31, 5) / comb(50, 5))
+
+
+def test_repeticao_esperada_usa_pares_e_nao_sorteios():
+    """
+    O erro classico e comparar 1970 com 2.118.760 e concluir "impossivel".
+    O correto e comparar os C(1970,2) = 1.939.465 PARES. Da esperado ~0,92,
+    e observou-se 1 repeticao real.
+    """
+    n = 1970
+    pares = n * (n - 1) / 2
+    assert pares == pytest.approx(1_939_465)
+    esperado = pares / config.MAIN_COMBINATIONS
+    assert esperado == pytest.approx(0.915, abs=0.01)
+
+
+def test_sobreposicao_soma_um():
+    """As probabilidades de partilhar 0..5 numeros tem de somar 1."""
+    from math import comb
+
+    total = sum(comb(5, k) * comb(45, 5 - k) / comb(50, 5) for k in range(6))
+    assert total == pytest.approx(1.0)

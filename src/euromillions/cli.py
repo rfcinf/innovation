@@ -8,6 +8,7 @@ Interface de linha de comandos.
     python -m euromillions.cli valor [--jackpot 100e6]
     python -m euromillions.cli estrelas
     python -m euromillions.cli carteira
+    python -m euromillions.cli padroes
     python -m euromillions.cli m1lhao
     python -m euromillions.cli elasticidade
     python -m euromillions.cli comparativo
@@ -26,7 +27,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-from . import config, elasticity, ev, m1lhao, machines, portfolio, quantum, randomness, stars
+from . import (config, elasticity, ev, m1lhao, machines, patterns, portfolio,
+               quantum, randomness, stars)
 from . import backtest as bt
 from . import dataset as ds
 from . import optimizer as opt
@@ -350,6 +352,59 @@ def cmd_elasticidade(args) -> None:
     print("  em ev.TIER_ELASTICITY pelos valores medidos.")
 
 
+def cmd_padroes(args) -> None:
+    df = ds.load_draws()
+
+    _hr("A PERGUNTA: alguma combinação já se repetiu?")
+    r = patterns.repeat_report(df)
+    print(f"  sorteios                    {r['sorteios']}")
+    print(f"  pares de sorteios possíveis {r['pares_comparados']:,}")
+    print(f"  repetições OBSERVADAS       {r['repeticoes_observadas']}")
+    print(f"  repetições ESPERADAS        {r['repeticoes_esperadas']}")
+    print(f"  P(zero repetições)          {r['P_zero_repeticoes']}")
+    for d in r["detalhe"]:
+        print(f"\n  → {d['combinacao']}")
+        print(f"    saiu em {d['datas'][0]} e outra vez em {d['datas'][1]}")
+    print("\n  Não se compara um sorteio com um alvo: comparam-se TODOS os pares")
+    print("  de sorteios entre si (paradoxo dos aniversários). Daí o esperado ~1.")
+
+    _hr("COINCIDÊNCIAS ENTRE PARES DE SORTEIOS")
+    t, st = patterns.overlap_analysis(df)
+    print(t.to_string(index=False))
+    print(f"\n  {st['pares_de_sorteios']:,} pares   χ² = {st['chi2']} ({st['gl']} g.l.)   p = {st['p']:.4f}")
+    print("  Concordância quase perfeita com o acaso puro, em todos os níveis.")
+
+    _hr("O MAPA DO ESPAÇO — enumeração exata das 2.118.760 combinações")
+    print("A enumerar...", end=" ", flush=True)
+    patterns.universe()
+    print("feito.\n")
+    bat, det = patterns.full_pattern_battery(df)
+    print(bat.to_string(index=False))
+    print(f"\n  Famílias com desvio real após correção FDR: "
+          f"{int(bat['significativo_fdr5'].sum())} de {len(bat)}")
+
+    _hr("ONDE ESTÃO AS FAMÍLIAS RARAS (exemplo: números ≤31)")
+    tt = det["nums_ate_31"]
+    print(tt[["valor", "combinacoes", "probabilidade", "1_em",
+              "observado", "esperado", "desvio_%"]].to_string(index=False))
+    print("\n  ATENÇÃO À LEITURA. A família com 0 números ≤31 sai 1 vez em 182.")
+    print("  Isso NÃO torna um bilhete dessa família menos provável: ele continua")
+    print("  a valer 1 em 2.118.760, igual a qualquer outro. A família é rara")
+    print("  porque tem poucos membros (11.628), e o seu bilhete é um deles.")
+
+    _hr("'NUNCA ACONTECEU' — quando é que isso é informação?")
+    nh = patterns.never_happened_yet(df)
+    inform = nh[nh["ausencia_e_informativa"]] if len(nh) else nh
+    print(f"  Classes de padrões que ainda não saíram: {len(nh)}")
+    print(f"  Dessas, com ausência informativa (esperado > 3): {len(inform)}")
+    if len(nh):
+        print("\n  As 5 mais próximas de significarem alguma coisa:")
+        print(nh.head(5)[["propriedade", "valor_nunca_visto", "1_em",
+                          "esperado_em_1970_sorteios"]].to_string(index=False))
+    print("\n  Nenhuma delas deveria ter saído sequer 3 vezes em 22 anos.")
+    print("  Ausência sem expectativa não é evidência — é aritmética mal lida.")
+
+
 def cmd_valor(args) -> None:
     try:
         bd = ds.load_breakdown()
@@ -486,7 +541,7 @@ def cmd_jogar(args) -> None:
 
 def cmd_relatorio(args) -> None:
     for fn in (cmd_aleatoriedade, cmd_maquinas, cmd_popularidade, cmd_estrelas,
-               cmd_elasticidade, cmd_m1lhao, cmd_valor, cmd_carteira,
+               cmd_elasticidade, cmd_m1lhao, cmd_padroes, cmd_valor, cmd_carteira,
                cmd_backtest, cmd_comparativo):
         try:
             fn(args)
@@ -528,6 +583,9 @@ def main(argv: list[str] | None = None) -> None:
 
     e = sub.add_parser("estrelas", help="popularidade medida das estrelas")
     e.set_defaults(func=cmd_estrelas)
+
+    pa = sub.add_parser("padroes", help="repetições, coincidências e o mapa do espaço")
+    pa.set_defaults(func=cmd_padroes)
 
     mm = sub.add_parser("m1lhao", help="a parcela portuguesa do EV")
     mm.add_argument("--jackpot", type=float, default=60e6)

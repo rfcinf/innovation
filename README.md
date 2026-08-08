@@ -60,6 +60,17 @@ O jackpot **nunca saiu** — em nenhuma estratégia, em 22 anos simulados 250
 vezes. Jogando 5 apostas por sorteio, esperar um jackpot leva **269 mil
 anos**.
 
+### E as "lacunas"? Já saiu a mesma combinação duas vezes?
+
+Sim: **4-30-31-38-42**, a 02-05-2014 e a 31-08-2018 — quando o esperado
+eram 0,92 repetições. Comparando os 1.939.465 pares de sorteios da
+história em todos os graus de coincidência: **χ² = 1,33, p = 0,93**.
+Concordância quase perfeita com o acaso puro
+([`docs/08`](docs/08-lacunas-e-padroes.md)).
+
+Das 74 classes de padrões que "nunca aconteceram", **zero** têm ausência
+informativa — nenhuma deveria ter saído sequer 3 vezes.
+
 ---
 
 ## A ideia
@@ -103,6 +114,7 @@ python -m euromillions.cli maquinas            # equipamento e viés por segment
 python -m euromillions.cli popularidade        # modelo de escolha humana (números)
 python -m euromillions.cli estrelas            # popularidade medida das estrelas
 python -m euromillions.cli carteira            # reduzir P(não ganhar nada)
+python -m euromillions.cli padroes             # repetições e o mapa do espaço
 python -m euromillions.cli m1lhao              # a parcela portuguesa do EV
 python -m euromillions.cli elasticidade        # elasticidades medidas
 python -m euromillions.cli comparativo         # modelo vs avulso, todo o histórico
@@ -142,6 +154,7 @@ src/euromillions/
   stars.py         popularidade medida das estrelas (R²=0,59, 3090 obs.)
   m1lhao.py        a parcela portuguesa do EV (~21% do valor do bilhete)
   elasticity.py    elasticidades por escalão, medidas e não arbitradas
+  patterns.py      enumeração das 2.118.760 combinações e teste de padrões
   portfolio.py     cobertura: minimizar P(não ganhar nada)
   ev.py            valor esperado, partilha pari-mutuel, fiscalidade
   quantum.py       QRNG (ANU / LfD) com certificação da fonte
@@ -157,9 +170,10 @@ docs/
   05-segunda-ronda.md    estrelas, carteira, backtest walk-forward
   06-comparativo-historico.md  modelo vs apostas avulsas, 1970 sorteios
   07-correcoes.md        M1lhão, elasticidades medidas, uma hipótese falhada
+  08-lacunas-e-padroes.md  repetições, coincidências, o mapa exato do espaço
 ```
 
-`pytest tests/ -q` → 54 testes. As probabilidades oficiais
+`pytest tests/ -q` → 59 testes. As probabilidades oficiais
 (1 em 139.838.160) são calculadas de raiz e verificadas.
 
 ---
