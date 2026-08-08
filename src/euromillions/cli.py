@@ -8,6 +8,7 @@ Interface de linha de comandos.
     python -m euromillions.cli valor [--jackpot 100e6]
     python -m euromillions.cli estrelas
     python -m euromillions.cli carteira
+    python -m euromillions.cli plano
     python -m euromillions.cli modelo
     python -m euromillions.cli auditoria
     python -m euromillions.cli padroes
@@ -30,7 +31,7 @@ import numpy as np
 import pandas as pd
 
 from . import (audit, config, elasticity, ev, m1lhao, machines, model as mdl,
-               patterns, portfolio, quantum, randomness, stars)
+               patterns, portfolio, quantum, randomness, stars, strategy)
 from . import backtest as bt
 from . import dataset as ds
 from . import optimizer as opt
@@ -476,6 +477,47 @@ def cmd_auditoria(args) -> None:
         sys.exit(1)
 
 
+def cmd_plano(args) -> None:
+    bd = ds.load_breakdown()
+    master = ds.build_master()
+    prizes = ev.empirical_tier_prizes(bd)
+    e = _m1lhao_ev()
+
+    _hr("A TENSÃO: jackpot grande atrai mais concorrência")
+    f = strategy.fit_sales_elasticity(master)
+    for k, v in f.items():
+        print(f"  {k:<28} {v}")
+    print(f"\n  O jackpot duplica; as vendas sobem apenas "
+          f"{f.get('vendas_se_jackpot_duplicar', 1.21)}x.")
+    print("  O prémio ganha a corrida à concorrência — jackpots altos são melhores")
+    print("  MESMO depois de descontar a partilha extra.")
+
+    _hr("PROBABILIDADE DE FICAR SOZINHO COM O JACKPOT")
+    print(strategy.solo_table().to_string(index=False))
+    print("\n  π=0,35 é a carteira otimizada; π=1,53 é jogar datas.")
+    print("  A diferença aparece toda aqui: a mesma probabilidade de acertar,")
+    print("  e uma hipótese muito diferente de não ter de dividir.")
+
+    _hr(f"ALOCAÇÃO DO ORÇAMENTO — €{args.orcamento:.0f}/ano")
+    tab = strategy.budget_plans(args.orcamento, tier_prizes=prizes, ev_m1lhao=e)
+    print(tab.to_string(index=False))
+    print("\n  Repare na coluna P(jackpot/ano): NÃO MUDA. O número total de")
+    print("  apostas é o mesmo em todos os planos, e é só isso que determina")
+    print("  a probabilidade de acertar. O que muda é o retorno e o cheque.")
+
+    _hr("O PLANO RECOMENDADO")
+    r = strategy.recommend_plan(args.orcamento, tier_prizes=prizes, ev_m1lhao=e)
+    for k, v in r.items():
+        print(f"  {k:<32} {v}")
+
+    _hr("A ESCALA, SEM ADOÇAR")
+    print(f"  P(jackpot em algum ano)      {100*r['P_jackpot_por_ano']:.6f}%")
+    print(f"  anos para ESPERAR 1 jackpot  {r['anos_para_esperar_1_jackpot']:,}")
+    print(f"  retorno esperado             {r['retorno_por_euro']:.3f} € por cada €1")
+    print("\n  O plano melhora o que é melhorável. Não torna o jogo favorável,")
+    print("  e nenhum plano pode.")
+
+
 def cmd_valor(args) -> None:
     try:
         bd = ds.load_breakdown()
@@ -612,7 +654,8 @@ def cmd_jogar(args) -> None:
 
 def cmd_relatorio(args) -> None:
     for fn in (cmd_aleatoriedade, cmd_maquinas, cmd_popularidade, cmd_estrelas,
-               cmd_elasticidade, cmd_m1lhao, cmd_padroes, cmd_valor, cmd_carteira,
+               cmd_elasticidade, cmd_m1lhao, cmd_padroes, cmd_plano, cmd_valor,
+               cmd_carteira,
                cmd_backtest, cmd_comparativo):
         try:
             fn(args)
@@ -654,6 +697,11 @@ def main(argv: list[str] | None = None) -> None:
 
     e = sub.add_parser("estrelas", help="popularidade medida das estrelas")
     e.set_defaults(func=cmd_estrelas)
+
+    pl = sub.add_parser("plano", help="calendário e orçamento ótimos")
+    pl.add_argument("--orcamento", type=float, default=520.0,
+                    help="orçamento anual em euros")
+    pl.set_defaults(func=cmd_plano)
 
     mo = sub.add_parser("modelo", help="modelo consolidado e recomendação")
     mo.add_argument("--bilhetes", type=int, default=5)

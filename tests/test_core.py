@@ -670,3 +670,65 @@ def test_continuidade_respeita_uma_ou_duas_sextas_por_semana():
 
     e1 = [e for e in cfg.ERAS if e.star_pool == 9][0]
     assert "sextas" in e1.note.lower()
+
+
+# ---------------------------------------------------------------------------
+# Plano de jogo
+# ---------------------------------------------------------------------------
+
+def test_jackpot_cresce_mais_depressa_que_a_concorrencia():
+    """
+    Elasticidade das vendas ao jackpot = 0,271: o jackpot duplica, as vendas
+    sobem 1,21x. Se fosse >= 1, jackpots grandes nao compensariam e a
+    recomendacao inverter-se-ia.
+    """
+    from euromillions import strategy
+
+    assert 0 < strategy.SALES_ELASTICITY < 1
+    assert 2 ** strategy.SALES_ELASTICITY < 1.5
+    assert strategy.expected_sales(120e6) < 2 * strategy.expected_sales(60e6)
+
+
+def test_p_jackpot_depende_so_do_numero_de_apostas():
+    """
+    O ponto central do plano: concentrar o orcamento NAO altera a
+    probabilidade de acertar. Se este teste falhar, a recomendacao esta a
+    prometer o que nao pode.
+    """
+    from euromillions import strategy
+
+    p = config.JACKPOT.probability(12)
+    total = 208
+    espalhado = 1 - (1 - p) ** total          # 2 apostas x 104 sorteios
+    concentrado = 1 - (1 - p) ** total        # 41.6 apostas x 5 sorteios
+    assert espalhado == pytest.approx(concentrado)
+
+    tab = strategy.budget_plans(520.0)
+    assert tab["P(jackpot/ano)"].nunique() == 1
+
+
+def test_concentrar_aumenta_o_retorno():
+    """O que a concentracao muda de facto: retorno por euro e tamanho do cheque."""
+    from euromillions import strategy
+
+    tab = strategy.budget_plans(520.0)
+    ret = tab["retorno €/€"].to_numpy()
+    assert ret[-1] > ret[0]
+    assert ret[-1] / ret[0] > 1.5
+
+
+def test_impopular_aumenta_a_hipotese_de_ficar_sozinho():
+    from euromillions import strategy
+
+    otim = strategy.solo_probability(200e6, 0.35)
+    datas = strategy.solo_probability(200e6, 1.53)
+    assert otim["P_sozinho"] > datas["P_sozinho"]
+    assert otim["cheque_esperado_liquido"] > datas["cheque_esperado_liquido"]
+
+
+def test_plano_nao_promete_lucro():
+    """Mesmo o melhor plano possivel continua a devolver menos do que custa."""
+    from euromillions import strategy
+
+    tab = strategy.budget_plans(520.0)
+    assert tab["retorno €/€"].max() < 1.0
