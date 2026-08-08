@@ -161,6 +161,7 @@ def optimize(
     star_model=None,
     maximize_coverage: bool = True,
     popularity_quantile: float = 0.05,
+    ev_m1lhao: float = 0.0,
     verbose: bool = False,
 ) -> tuple[list[Ticket], pd.DataFrame]:
     """
@@ -204,7 +205,10 @@ def optimize(
 
     evs = np.array(
         [
-            expected_value(jackpot_eur, sales, float(p), star_pool, tier_prizes).ev_liquido
+            expected_value(
+                jackpot_eur, sales, float(p), star_pool, tier_prizes,
+                ev_m1lhao=ev_m1lhao
+            ).ev_liquido
             for p in popularity
         ]
     )
@@ -274,7 +278,8 @@ def optimize(
     chosen: list[Ticket] = []
     for idx in selected:
         r = expected_value(
-            jackpot_eur, sales, float(popularity[idx]), star_pool, tier_prizes
+            jackpot_eur, sales, float(popularity[idx]), star_pool, tier_prizes,
+            ev_m1lhao=ev_m1lhao,
         )
         chosen.append(
             Ticket(
@@ -297,6 +302,7 @@ def compare_to_typical(
     star_pool: int = 12,
     tier_prizes: dict[str, float] | None = None,
     star_model=None,
+    ev_m1lhao: float = 0.0,
 ) -> pd.DataFrame:
     """
     Compara a carteira escolhida com dois pontos de referência: uma aposta
@@ -314,7 +320,9 @@ def compare_to_typical(
         ("aposta média / aleatória", 1.0),
         ("carteira otimizada", pop_ours),
     ):
-        r = expected_value(jackpot_eur, sales, pop, star_pool, tier_prizes)
+        r = expected_value(
+            jackpot_eur, sales, pop, star_pool, tier_prizes, ev_m1lhao=ev_m1lhao
+        )
         rows.append(
             {
                 "estratégia": label,

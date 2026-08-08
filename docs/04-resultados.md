@@ -1,3 +1,8 @@
+> ⚠️ **Números corrigidos em [`docs/07-correcoes.md`](07-correcoes.md).**
+> O M1lhão estava ausente do motor de EV e as elasticidades por escalão
+> eram um palpite. A vantagem real da otimização é **+7,8%**, não os
+> valores indicados abaixo. Onde houver conflito, vale o `docs/07`.
+
 # Resultados
 
 Todos os valores saem de `python -m euromillions.cli relatorio` sobre 1970

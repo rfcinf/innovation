@@ -19,11 +19,16 @@ entropia quântica.
    (ρ = 0,775, p = 2,5 × 10⁻¹⁸⁶). Ambos validados fora da amostra.
 3. **É possível reduzir a probabilidade de não ganhar nada** — de 0,80 para
    0,646, sem gastar mais um cêntimo.
-4. **Tudo somado vale +36% por aposta — e mesmo assim não chega para
-   lucrar.** O valor esperado máximo é €2,01 numa aposta de €2,50.
+4. **Tudo somado vale +7,8% por aposta — e não chega para lucrar.** O
+   retorno da melhor estratégia possível é €0,41 por cada €1 apostado.
 
 Os quatro resultados são verdadeiros ao mesmo tempo. O sistema entrega os
 três primeiros por inteiro e não finge sobre o quarto.
+
+> A vantagem chegou a ser anunciada como +36%. Estava errada: faltava o
+> M1lhão no motor de EV e as elasticidades por escalão eram um palpite meu.
+> Corrigido em [`docs/07-correcoes.md`](docs/07-correcoes.md), com a
+> vantagem a cair para +7,8%.
 
 ### As três alavancas
 
@@ -33,19 +38,23 @@ três primeiros por inteiro e não finge sobre o quarto.
 | popularidade das estrelas | cheque maior | par 2,35× | ρ = 0,775 fora da amostra |
 | cobertura da carteira | ganhar mais vezes | P(nada) 0,80 → 0,646 | 1030 sorteios reais |
 
-Combinadas: **+36% no valor esperado** e **P(algum prémio) de 19% para
+Combinadas: **+7,8% no valor esperado** e **P(algum prémio) de 19% para
 36%**, ao mesmo preço e com a mesma probabilidade de jackpot.
+
+Cerca de 21% do valor de um bilhete português vem do **M1lhão**, onde o
+código é gerado pelo sistema e não há nada a otimizar — é o que faz a
+vantagem percentual encolher.
 
 ### Modelo vs apostas avulsas, 1970 sorteios reais
 
 Confronto com todo o histórico desde 2004 — 2,46 milhões de apostas por
 estratégia ([`docs/06`](docs/06-comparativo-historico.md)):
 
-| | acerta mais? | EV (jackpot €60M) | P(nada) |
+| | acerta mais? | EV (jackpot €60M, com M1lhão) | P(nada) |
 |---|---|---:|---:|
-| datas | não | €0,699 | 0,677 |
-| aleatória | não | €0,759 | 0,663 |
-| **otimizada** | não | **€0,841 (+20,3%)** | **0,639** |
+| datas | não | €0,942 | 0,677 |
+| aleatória | não | €0,974 | 0,663 |
+| **otimizada** | não | **€1,016 (+7,8%)** | **0,639** |
 
 O jackpot **nunca saiu** — em nenhuma estratégia, em 22 anos simulados 250
 vezes. Jogando 5 apostas por sorteio, esperar um jackpot leva **269 mil
@@ -94,6 +103,8 @@ python -m euromillions.cli maquinas            # equipamento e viés por segment
 python -m euromillions.cli popularidade        # modelo de escolha humana (números)
 python -m euromillions.cli estrelas            # popularidade medida das estrelas
 python -m euromillions.cli carteira            # reduzir P(não ganhar nada)
+python -m euromillions.cli m1lhao              # a parcela portuguesa do EV
+python -m euromillions.cli elasticidade        # elasticidades medidas
 python -m euromillions.cli comparativo         # modelo vs avulso, todo o histórico
 python -m euromillions.cli valor               # EV e ponto de equilíbrio
 python -m euromillions.cli backtest            # walk-forward + fora da amostra
@@ -129,6 +140,8 @@ src/euromillions/
   machines.py      equipamento, viés por segmento, custo da diluição
   popularity.py    GLM de Poisson por IRLS — popularidade dos números
   stars.py         popularidade medida das estrelas (R²=0,59, 3090 obs.)
+  m1lhao.py        a parcela portuguesa do EV (~21% do valor do bilhete)
+  elasticity.py    elasticidades por escalão, medidas e não arbitradas
   portfolio.py     cobertura: minimizar P(não ganhar nada)
   ev.py            valor esperado, partilha pari-mutuel, fiscalidade
   quantum.py       QRNG (ANU / LfD) com certificação da fonte
@@ -143,9 +156,10 @@ docs/
   04-resultados.md       todos os números
   05-segunda-ronda.md    estrelas, carteira, backtest walk-forward
   06-comparativo-historico.md  modelo vs apostas avulsas, 1970 sorteios
+  07-correcoes.md        M1lhão, elasticidades medidas, uma hipótese falhada
 ```
 
-`pytest tests/ -q` → 45 testes. As probabilidades oficiais
+`pytest tests/ -q` → 54 testes. As probabilidades oficiais
 (1 em 139.838.160) são calculadas de raiz e verificadas.
 
 ---
@@ -187,6 +201,13 @@ tomar:
   independentes. As margens corretas são várias vezes maiores. As
   conclusões sobreviveram — mas isso só se sabe depois de as calcular bem.
 
+- **Corrigi um erro factual que me favorecia, ao ser questionado.** Faltava
+  o M1lhão no motor de EV (~21% do valor de um bilhete português) e as
+  elasticidades por escalão eram um palpite inflacionado. Ao corrigir
+  ambos, a vantagem anunciada caiu de +36% para +7,8%. Testei também uma
+  hipótese minha para melhorar o modelo — falhou, e está documentada como
+  resultado negativo em `docs/07`.
+
 - **Apanhei o otimizador a sabotar-se.** Ordenar candidatos só por valor
   esperado dava carteiras com 19 números distintos e P(nada) *pior do que
   jogar ao acaso*: as combinações impopulares concentram-se nos números
@@ -208,8 +229,8 @@ que é 1 em 139.838.160 por aposta. O que faz é maximizar o prémio no caso
 improvável de acertar, e quantificar com honestidade o custo de jogar.
 
 O valor esperado de uma aposta é **sempre negativo**, em todos os cenários
-testados, incluindo o jackpot no teto de €250M e incluindo o cálculo sem
-imposto. Jogue apenas o que estiver disposto a perder.
+testados — incluindo o jackpot no teto de €250M, incluindo o cálculo sem
+imposto, e incluindo já a parcela do M1lhão. Jogue apenas o que estiver disposto a perder.
 
 Em caso de dependência do jogo, em Portugal: **SICAD — Linha Vida
 1414** (gratuita, todos os dias).

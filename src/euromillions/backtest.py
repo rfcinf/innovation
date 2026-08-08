@@ -541,6 +541,7 @@ def analytic_comparison(
     jackpot_eur: float = 60e6,
     sales: float = 24e6,
     n_bets: int = 2_462_500,
+    ev_m1lhao: float = 0.0,
 ) -> pd.DataFrame:
     """
     Comparação com variância reduzida — a que consegue mesmo separar as
@@ -575,7 +576,9 @@ def analytic_comparison(
 
     rows = []
     for strat, pi in popularity.items():
-        r = expected_value(jackpot_eur, sales, pi, star_pool, prizes)
+        r = expected_value(
+            jackpot_eur, sales, pi, star_pool, prizes, ev_m1lhao=ev_m1lhao
+        )
         rows.append(
             {
                 "estratégia": strat,
@@ -583,6 +586,7 @@ def analytic_comparison(
                 "EV_por_aposta_€": round(r.ev_liquido, 4),
                 "retorno_€/€": round(r.retorno_por_euro, 4),
                 "fatia_do_jackpot_%": round(100 * r.fator_partilha, 1),
+                "EV_M1lhão_€": round(r.ev_m1lhao, 4),
                 "EV_total_€": round(r.ev_liquido * n_bets, 0),
             }
         )

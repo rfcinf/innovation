@@ -100,13 +100,46 @@ FALLBACK_TIER_PRIZES: dict[str, float] = {
 # de cada escalão. Nos escalões de 5 números o efeito é total (é a mesma
 # combinação exata); nos escalões baixos é diluído, porque acertar 2 ou 3
 # números não fixa a combinação toda.
+#
+# ESTES VALORES SÃO MEDIDOS, NÃO ARBITRADOS.
+#
+# A versão anterior desta tabela (1,0 / 0,7 / 0,4 / 0,2 / 0,1) foi escrita à
+# mão por analogia — o mesmo pecado que foi corrigido nas estrelas e que
+# ficou aqui por corrigir. `elasticity.measure_elasticities()` estima-a
+# regredindo log(vencedores do escalão) na popularidade PREVISTA da
+# combinação sorteada, que depende apenas das suas características e não
+# contém vencedores nem vendas estimadas — e portanto não sofre da
+# correlação espúria que a popularidade observada introduziria.
+#
+# Validação do método: o escalão 5+0 mede 0,956 quando a teoria exige
+# exatamente 1,0 (acertar os 5 números *é* ter a nossa combinação). Os
+# escalões de 5 números ficam fixados em 1,0 por essa razão teórica; os
+# restantes usam a medição.
+#
+# O resultado é que a tabela anterior estava sistematicamente inflacionada,
+# sobrestimando o EV da combinação otimizada em ~4,5%.
+#
+# Os escalões de 2 números medem elasticidade nula, e o 1+2 mede-a negativa
+# (-0,24, p = 5e-5). Não é ruído: é um efeito de composição. Quando a
+# combinação sorteada é popular, os bilhetes populares tendem a acertar
+# *mais* números, e a massa desloca-se dos escalões baixos para os altos —
+# esvaziando-os.
 TIER_ELASTICITY: dict[str, float] = {
+    "5+2": 1.000, "5+1": 1.000, "5+0": 1.000,   # teoria, confirmada por 5+0 = 0,956
+    "4+2": 0.523, "4+1": 0.572, "4+0": 0.601,
+    "3+2": 0.193, "3+1": 0.234, "3+0": 0.258,
+    "2+2": 0.000, "2+1": 0.000, "2+0": 0.009,
+    "1+2": 0.000,
+}
+
+TIER_ELASTICITY_HANDMADE: dict[str, float] = {
     "5+2": 1.00, "5+1": 1.00, "5+0": 1.00,
     "4+2": 0.70, "4+1": 0.70, "4+0": 0.70,
     "3+2": 0.40, "3+1": 0.40, "3+0": 0.40,
     "2+2": 0.20, "2+1": 0.20, "2+0": 0.20,
     "1+2": 0.10,
 }
+"""Guardada para comparação — é o que o sistema usava antes de medir."""
 
 
 @dataclass
@@ -123,8 +156,12 @@ class EVResult:
     retorno_por_euro: float
     lambda_jackpot: float
     fator_partilha: float
+    ev_m1lhao: float = 0.0
 
     def __str__(self) -> str:
+        linha_m1 = (
+            f"EV M1lhão        €{self.ev_m1lhao:.4f}\n" if self.ev_m1lhao else ""
+        )
         return (
             f"Jackpot          €{self.jackpot_eur:,.0f}\n"
             f"Popularidade     {self.popularity:.3f}x\n"
@@ -132,6 +169,7 @@ class EVResult:
             f"→ recebemos {100*self.fator_partilha:.1f}% do bolo se ganharmos\n"
             f"EV jackpot       €{self.ev_jackpot:.4f}\n"
             f"EV outros esc.   €{self.ev_inferiores:.4f}\n"
+            + linha_m1 +
             f"EV líquido total €{self.ev_liquido:.4f}  (custo €{self.custo:.2f})\n"
             f"Retorno por euro €{self.retorno_por_euro:.4f}"
         )
@@ -144,12 +182,19 @@ def expected_value(
     star_pool: int = 12,
     tier_prizes: dict[str, float] | None = None,
     apply_tax: bool = True,
+    ev_m1lhao: float = 0.0,
 ) -> EVResult:
     """
     Valor esperado líquido de uma aposta, em euros.
 
     `popularity` é o multiplicador devolvido pelo modelo de popularidade:
     1.0 = combinação banal, 0.4 = combinação que quase ninguém joga.
+
+    `ev_m1lhao` é a parcela do sorteio português do M1lhão (ver
+    `m1lhao.expected_value_per_bet`). É uma constante por aposta: o código é
+    gerado pelo sistema, ninguém o escolhe, e por isso não há popularidade
+    nem partilha a otimizar. Some-se sempre que se queira o valor real de um
+    bilhete comprado em Portugal — omiti-la subestima o retorno em ~25%.
     """
     prizes = dict(FALLBACK_TIER_PRIZES)
     if tier_prizes:
@@ -180,14 +225,14 @@ def expected_value(
         net = config.net_prize(gross) if apply_tax else gross
         ev_lower += tier.probability(star_pool) * net
 
-    ev_gross_total = ev_jackpot + ev_lower
+    ev_gross_total = ev_jackpot + ev_lower + ev_m1lhao
     cost = config.TICKET_PRICE_EUR
     return EVResult(
         jackpot_eur=jackpot_eur,
         sales=sales,
         popularity=popularity,
         star_pool=star_pool,
-        ev_bruto=p_jack * gross_jackpot + ev_lower,
+        ev_bruto=p_jack * gross_jackpot + ev_lower + ev_m1lhao,
         ev_liquido=ev_gross_total,
         ev_jackpot=ev_jackpot,
         ev_inferiores=ev_lower,
@@ -195,6 +240,7 @@ def expected_value(
         retorno_por_euro=ev_gross_total / cost,
         lambda_jackpot=lam,
         fator_partilha=share,
+        ev_m1lhao=ev_m1lhao,
     )
 
 
@@ -209,6 +255,7 @@ def breakeven_jackpot(
     tier_prizes: dict[str, float] | None = None,
     apply_tax: bool = True,
     hi: float = 5e9,
+    ev_m1lhao: float = 0.0,
 ) -> float | None:
     """
     Jackpot a partir do qual o EV iguala o preço da aposta.
@@ -219,7 +266,7 @@ def breakeven_jackpot(
     """
     def f(j: float) -> float:
         return expected_value(
-            j, sales, popularity, star_pool, tier_prizes, apply_tax
+            j, sales, popularity, star_pool, tier_prizes, apply_tax, ev_m1lhao
         ).ev_liquido - config.TICKET_PRICE_EUR
 
     if f(hi) < 0:

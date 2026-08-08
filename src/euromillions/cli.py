@@ -8,6 +8,8 @@ Interface de linha de comandos.
     python -m euromillions.cli valor [--jackpot 100e6]
     python -m euromillions.cli estrelas
     python -m euromillions.cli carteira
+    python -m euromillions.cli m1lhao
+    python -m euromillions.cli elasticidade
     python -m euromillions.cli comparativo
     python -m euromillions.cli backtest
     python -m euromillions.cli jogar [--bilhetes 5] [--jackpot 100e6]
@@ -24,7 +26,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from . import config, ev, machines, portfolio, quantum, randomness, stars
+from . import config, elasticity, ev, m1lhao, machines, portfolio, quantum, randomness, stars
 from . import backtest as bt
 from . import dataset as ds
 from . import optimizer as opt
@@ -268,7 +270,8 @@ def cmd_comparativo(args) -> None:
     print(r["escaloes"].to_string())
 
     _hr("COMPARAÇÃO ANALÍTICA — variância reduzida, esta separa")
-    print(bt.analytic_comparison(bdf, pops, jackpot_eur=args.jackpot).to_string(index=False))
+    print(bt.analytic_comparison(bdf, pops, jackpot_eur=args.jackpot,
+                                 ev_m1lhao=_m1lhao_ev()).to_string(index=False))
 
     _hr("POR ERA")
     print(r["por_era"].pivot_table(
@@ -281,6 +284,72 @@ def cmd_comparativo(args) -> None:
         print(f"  {k:<30} {v}")
 
 
+def _m1lhao_ev() -> float:
+    """EV do M1lhão por aposta, a partir dos dados recentes."""
+    try:
+        bd = ds.load_breakdown()
+        m = ds.build_master()
+        rec = m[[d.year >= 2025 for d in m["date"]]]
+        tue = rec[rec["dow"] == "Tue"]["sales_est"].median()
+        fri = rec[rec["dow"] == "Fri"]["sales_est"].median()
+        return float(m1lhao.summary(bd, tue, fri)["ev_por_aposta_eur"])
+    except Exception:
+        return 0.0
+
+
+def cmd_m1lhao(args) -> None:
+    bd = ds.load_breakdown()
+    m = ds.build_master()
+    rec = m[[d.year >= 2025 for d in m["date"]]]
+    tue = rec[rec["dow"] == "Tue"]["sales_est"].median()
+    fri = rec[rec["dow"] == "Fri"]["sales_est"].median()
+
+    _hr("M1LHÃO — a parcela que faltava no motor de EV")
+    s = m1lhao.summary(bd, tue, fri)
+    for k, v in s.items():
+        print(f"  {k:<30} {v}")
+
+    _hr("QUOTA PORTUGUESA AO LONGO DO TEMPO")
+    print(m1lhao.share_trend(bd).tail(10).to_string(index=False))
+    print("\n  A quota tem descido de forma sistemática. Menos apostas")
+    print("  portuguesas = menos códigos = M1lhão mais valioso por aposta.")
+
+    _hr("EFEITO DE DILUIÇÃO NA VANTAGEM DO SISTEMA")
+    prizes = ev.empirical_tier_prizes(bd)
+    e = s["ev_por_aposta_eur"]
+    for nome, pi in (("datas", 1.5343), ("aleatória", 1.0201), ("otimizada", 0.6191)):
+        r = ev.expected_value(args.jackpot, 24e6, pi, 12, prizes, ev_m1lhao=e)
+        b = m1lhao.blend_with_euromillions(r.ev_liquido - e, e)
+        print(f"  {nome:<10} EM €{b['ev_euromillions']:.4f} + M1lhão €{b['ev_m1lhao']:.4f} "
+              f"= €{b['ev_total']:.4f}   ({b['peso_m1lhao_%']}% vem do M1lhão)")
+    print("\n  O código do M1lhão é gerado pelo sistema: não há nada a otimizar nele.")
+    print("  Somar uma parcela fixa reduz a vantagem PERCENTUAL da otimização —")
+    print("  e essa percentagem menor é a verdadeira.")
+
+
+def cmd_elasticidade(args) -> None:
+    master = ds.build_master()
+    bd = ds.load_breakdown()
+    model, _ = fit_popularity_model(master)
+
+    _hr("ELASTICIDADE POR ESCALÃO — medida vs escrita à mão")
+    t = elasticity.measure_elasticities(master, bd, model)
+    print(t.to_string(index=False))
+    print("\n  Validação do método: 5+0 mede 0,956 quando a teoria exige 1,0")
+    print("  (acertar os 5 números É ter a nossa combinação exata).")
+    print("  Os escalões de 5 ficam fixados em 1,0 por essa razão teórica.")
+
+    _hr("IMPACTO NO VALOR ESPERADO")
+    prizes = ev.empirical_tier_prizes(bd)
+    med = elasticity.fitted_table(t)
+    for k in ("5+2", "5+1", "5+0"):
+        med[k] = 1.0
+    print(elasticity.impact_on_ev(med, jackpot_eur=args.jackpot,
+                                  tier_prizes=prizes, popularity=0.62).to_string(index=False))
+    print("\n  A tabela escrita à mão inflacionava o EV. Já foi substituída")
+    print("  em ev.TIER_ELASTICITY pelos valores medidos.")
+
+
 def cmd_valor(args) -> None:
     try:
         bd = ds.load_breakdown()
@@ -289,18 +358,20 @@ def cmd_valor(args) -> None:
     except FileNotFoundError:
         prizes, src = None, "valores de recurso"
 
+    e = _m1lhao_ev()
     _hr("IMPOSTO DO SELO EM PORTUGAL")
     print(ev.tax_impact().to_string(index=False))
 
     _hr(f"VALOR ESPERADO POR APOSTA (€{config.TICKET_PRICE_EUR}) — prémios: {src}")
     print(f"Vendas assumidas: {args.vendas/1e6:.0f}M apostas por sorteio\n")
     print(ev.ev_curve(args.vendas, tier_prizes=prizes).to_string(index=False))
+    print(f"\n  (tabela acima SEM o M1lhão; some €{e:.4f} por aposta para o valor real em Portugal)")
 
     _hr("PONTO DE EQUILÍBRIO")
     for pop, label in ((3.0, "combinação popular (datas)"),
                        (1.0, "combinação média"),
                        (0.35, "combinação otimizada")):
-        be = ev.breakeven_jackpot(args.vendas, pop, tier_prizes=prizes)
+        be = ev.breakeven_jackpot(args.vendas, pop, tier_prizes=prizes, ev_m1lhao=e)
         if be is None:
             print(f"  {label:<30} inatingível — nem no teto de €250M o EV chega a €2,50")
         else:
@@ -374,6 +445,7 @@ def cmd_jogar(args) -> None:
         n_candidates=args.candidatos,
         allow_network=not args.offline,
         star_model=star_model,
+        ev_m1lhao=_m1lhao_ev(),
         verbose=True,
     )
     if star_model is not None:
@@ -385,8 +457,8 @@ def cmd_jogar(args) -> None:
 
     _hr("COMPARAÇÃO")
     print(opt.compare_to_typical(model, tickets, args.jackpot, args.vendas,
-                                 tier_prizes=prizes,
-                                 star_model=star_model).to_string(index=False))
+                                 tier_prizes=prizes, star_model=star_model,
+                                 ev_m1lhao=_m1lhao_ev()).to_string(index=False))
 
     _hr("RISCO DA CARTEIRA")
     sim = portfolio.simulate_portfolio(
@@ -414,7 +486,8 @@ def cmd_jogar(args) -> None:
 
 def cmd_relatorio(args) -> None:
     for fn in (cmd_aleatoriedade, cmd_maquinas, cmd_popularidade, cmd_estrelas,
-               cmd_valor, cmd_carteira, cmd_backtest, cmd_comparativo):
+               cmd_elasticidade, cmd_m1lhao, cmd_valor, cmd_carteira,
+               cmd_backtest, cmd_comparativo):
         try:
             fn(args)
         except FileNotFoundError as e:
@@ -455,6 +528,14 @@ def main(argv: list[str] | None = None) -> None:
 
     e = sub.add_parser("estrelas", help="popularidade medida das estrelas")
     e.set_defaults(func=cmd_estrelas)
+
+    mm = sub.add_parser("m1lhao", help="a parcela portuguesa do EV")
+    mm.add_argument("--jackpot", type=float, default=60e6)
+    mm.set_defaults(func=cmd_m1lhao)
+
+    el = sub.add_parser("elasticidade", help="elasticidades medidas por escalão")
+    el.add_argument("--jackpot", type=float, default=60e6)
+    el.set_defaults(func=cmd_elasticidade)
 
     cp = sub.add_parser("comparativo", help="modelo vs apostas avulsas, todo o histórico")
     cp.add_argument("--reps", type=int, default=250)

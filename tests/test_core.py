@@ -421,3 +421,106 @@ def test_escala_do_jackpot():
     assert r["apostas_para_1_esperado"] == 139_838_160
     assert r["anos_jogando_5_por_sorteio"] > 100_000
     assert r["jackpots_esperados"] < 0.02
+
+
+# ---------------------------------------------------------------------------
+# M1lhao
+# ---------------------------------------------------------------------------
+
+def test_m1lhao_ev_por_aposta():
+    """
+    Cada aposta gera um codigo; um codigo ganha por semana. O EV e o premio
+    liquido a dividir pelo numero de codigos em circulacao.
+    """
+    from euromillions import m1lhao
+
+    codigos = 4_000_000.0
+    e = m1lhao.expected_value_per_bet(codigos / m1lhao.DRAWS_PER_WEEK, 1.0)
+    assert e == pytest.approx(config.net_prize(1_000_000.0) / codigos)
+
+
+def test_m1lhao_conta_uma_semana_de_apostas():
+    """O sorteio e a sexta e inclui as apostas de terca: duas por semana."""
+    from euromillions import m1lhao
+
+    assert m1lhao.DRAWS_PER_WEEK == 2
+    assert m1lhao.codes_per_draw(1_000_000, 0.10) == pytest.approx(200_000)
+
+
+def test_m1lhao_e_tributado():
+    """€1M excede o limiar dos €5.000: 20% sobre o excedente."""
+    from euromillions import m1lhao
+
+    com = m1lhao.expected_value_per_bet(1e6, 0.1, apply_tax=True)
+    sem = m1lhao.expected_value_per_bet(1e6, 0.1, apply_tax=False)
+    assert com < sem
+    assert com / sem == pytest.approx(801_000 / 1_000_000)
+
+
+def test_m1lhao_soma_ao_ev_e_nao_e_otimizavel():
+    """
+    O codigo e gerado pelo sistema: a parcela e identica seja qual for a
+    combinacao jogada. Tem de somar igual aos dois lados.
+    """
+    e = 0.2133
+    pop = ev.expected_value(60e6, 24e6, 1.5, ev_m1lhao=e)
+    imp = ev.expected_value(60e6, 24e6, 0.6, ev_m1lhao=e)
+    assert pop.ev_m1lhao == imp.ev_m1lhao == e
+    sem_pop = ev.expected_value(60e6, 24e6, 1.5)
+    assert pop.ev_liquido - sem_pop.ev_liquido == pytest.approx(e)
+
+
+def test_m1lhao_dilui_a_vantagem_percentual():
+    """
+    Somar uma parcela fixa e igual para todos reduz o ganho PERCENTUAL da
+    otimizacao. Ignorar isto inflacionaria a vantagem anunciada.
+    """
+    e = 0.2133
+    sem = (ev.expected_value(60e6, 24e6, 0.62).ev_liquido
+           / ev.expected_value(60e6, 24e6, 1.53).ev_liquido - 1)
+    com = (ev.expected_value(60e6, 24e6, 0.62, ev_m1lhao=e).ev_liquido
+           / ev.expected_value(60e6, 24e6, 1.53, ev_m1lhao=e).ev_liquido - 1)
+    assert com < sem
+
+
+def test_ev_continua_negativo_mesmo_com_m1lhao():
+    """A correcao muda os numeros, nao a conclusao."""
+    melhor = ev.expected_value(
+        ev.JACKPOT_CAP_EUR, 20e6, popularity=0.3, ev_m1lhao=0.25
+    )
+    assert melhor.ev_liquido < config.TICKET_PRICE_EUR
+
+
+# ---------------------------------------------------------------------------
+# Elasticidades medidas
+# ---------------------------------------------------------------------------
+
+def test_elasticidade_dos_escaloes_de_cinco_e_um():
+    """
+    Acertar os 5 numeros E ter a nossa combinacao exata: a elasticidade tem
+    de ser 1.0 por definicao. A medicao independente deu 0.956 no 5+0, o que
+    valida o metodo.
+    """
+    for label in ("5+2", "5+1", "5+0"):
+        assert ev.TIER_ELASTICITY[label] == 1.0
+
+
+def test_elasticidade_decresce_com_numeros_acertados():
+    """
+    Menos numeros acertados = combinacao menos fixada = menos sensivel a
+    popularidade. A monotonia e a estrutura essencial da tabela.
+    """
+    cinco = ev.TIER_ELASTICITY["5+0"]
+    quatro = ev.TIER_ELASTICITY["4+0"]
+    tres = ev.TIER_ELASTICITY["3+0"]
+    dois = ev.TIER_ELASTICITY["2+0"]
+    assert cinco > quatro > tres > dois
+
+
+def test_tabela_escrita_a_mao_estava_inflacionada():
+    """
+    Registo do erro: os valores medidos sao inferiores aos que estavam
+    escritos a mao em todos os escaloes abaixo de 5 numeros.
+    """
+    for label in ("4+2", "4+1", "4+0", "3+2", "3+1", "3+0", "2+2", "2+1", "2+0", "1+2"):
+        assert ev.TIER_ELASTICITY[label] < ev.TIER_ELASTICITY_HANDMADE[label]
