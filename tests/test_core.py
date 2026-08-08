@@ -584,3 +584,89 @@ def test_sobreposicao_soma_um():
 
     total = sum(comb(5, k) * comb(45, 5 - k) / comb(50, 5) for k in range(6))
     assert total == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Modelo consolidado
+# ---------------------------------------------------------------------------
+
+def test_proveniencia_declara_a_origem_de_tudo():
+    """
+    Cada input do modelo tem de dizer de onde vem. Um numero sem origem
+    declarada e um palpite a espera de ser descoberto — foi assim que
+    nasceram o prior das estrelas e a tabela de elasticidades.
+    """
+    from euromillions.model import PROVENANCE
+
+    assert len(PROVENANCE) >= 8
+    validas = {"medido", "oficial", "assumido"}
+    for inp in PROVENANCE:
+        assert inp.origem in validas, inp.nome
+        assert inp.valor
+
+
+def test_suposicoes_estao_explicitas_e_nao_escondidas():
+    """
+    O estimador de vendas e a fracao de apostas aleatorias sao conhecidos
+    pontos fracos. Tem de continuar marcados como suposicoes, para o auditor
+    os sinalizar.
+    """
+    from euromillions.model import PROVENANCE
+
+    assumidas = {i.nome for i in PROVENANCE if i.origem == "assumido"}
+    assert any("vendas" in n for n in assumidas)
+    assert any("aleat" in n for n in assumidas)
+
+
+# ---------------------------------------------------------------------------
+# Auditor
+# ---------------------------------------------------------------------------
+
+def test_auditor_reprova_quando_ha_critico():
+    from euromillions import audit
+
+    rep = audit.AuditReport()
+    rep.add(audit.OK, "x", "tudo bem", "ok")
+    assert rep.verdict() == "APROVADO"
+    rep.add(audit.AVISO, "x", "duvida", "hmm", False)
+    assert "RESERVAS" in rep.verdict()
+    rep.add(audit.CRITICO, "x", "avaria", "partido", False)
+    assert rep.verdict().startswith("REPROVADO")
+
+
+def test_auditor_verifica_afirmacoes_publicadas():
+    """
+    As afirmacoes do README sao recalculadas e comparadas. Se a documentacao
+    se afastar do codigo, tem de falhar — uma pagina que promete um numero
+    que o programa ja nao produz e pior do que nao ter pagina nenhuma.
+    """
+    from euromillions.audit import CLAIMS
+
+    nomes = {c[0] for c in CLAIMS}
+    assert "odds do jackpot" in nomes
+    for nome, unidade, valor, tol in CLAIMS:
+        assert valor > 0
+        assert 0.0 <= tol < 1.0
+
+
+def test_odds_publicadas_batem_com_o_calculo():
+    """A afirmacao central do projeto, verificada de raiz."""
+    from euromillions.audit import CLAIMS
+
+    publicado = dict((c[0], c[2]) for c in CLAIMS)
+    assert round(config.JACKPOT.odds(12)) == publicado["odds do jackpot"]
+    assert config.probability_any_prize(12) == pytest.approx(
+        publicado["P(algum prémio) por aposta"], rel=0.01
+    )
+
+
+def test_continuidade_respeita_uma_ou_duas_sextas_por_semana():
+    """
+    Ate maio de 2011 havia UM sorteio por semana. Uma verificacao de
+    continuidade que exija intervalos curtos em todo o historico sinaliza
+    377 falsas anomalias — foi o que a primeira versao do auditor fez.
+    """
+    from euromillions import config as cfg
+
+    e1 = [e for e in cfg.ERAS if e.star_pool == 9][0]
+    assert "sextas" in e1.note.lower()

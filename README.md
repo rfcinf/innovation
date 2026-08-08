@@ -71,6 +71,17 @@ Concordância quase perfeita com o acaso puro
 Das 74 classes de padrões que "nunca aconteceram", **zero** têm ausência
 informativa — nenhuma deveria ter saído sequer 3 vezes.
 
+### Modelo de produção e auditor
+
+`modelo` consolida os cinco componentes estimados e declara a origem de
+cada número que usa — oficial, medido ou assumido. Restam três suposições,
+todas assinaladas.
+
+`auditoria` verifica o sistema em seis áreas (dados, modelos, deriva,
+suposições, afirmações publicadas, lacunas), revalida tudo fora da amostra
+e sai com código 1 se houver problemas críticos. Estado atual: **aprovado
+com reservas, 5 avisos** ([`docs/09`](docs/09-modelo-e-auditor.md)).
+
 ---
 
 ## A ideia
@@ -108,6 +119,9 @@ export PYTHONPATH=src
 
 python -m euromillions.cli fetch --breakdown   # recolha (~15 min)
 python -m euromillions.cli relatorio           # corre tudo
+
+python -m euromillions.cli modelo              # modelo consolidado + recomendação
+python -m euromillions.cli auditoria           # auditar o sistema e caçar lacunas
 
 python -m euromillions.cli aleatoriedade       # bateria de testes
 python -m euromillions.cli maquinas            # equipamento e viés por segmento
@@ -155,6 +169,8 @@ src/euromillions/
   m1lhao.py        a parcela portuguesa do EV (~21% do valor do bilhete)
   elasticity.py    elasticidades por escalão, medidas e não arbitradas
   patterns.py      enumeração das 2.118.760 combinações e teste de padrões
+  model.py         modelo consolidado, com proveniência declarada de cada input
+  audit.py         auditor: revalida, deteta deriva e caça lacunas
   portfolio.py     cobertura: minimizar P(não ganhar nada)
   ev.py            valor esperado, partilha pari-mutuel, fiscalidade
   quantum.py       QRNG (ANU / LfD) com certificação da fonte
@@ -171,9 +187,10 @@ docs/
   06-comparativo-historico.md  modelo vs apostas avulsas, 1970 sorteios
   07-correcoes.md        M1lhão, elasticidades medidas, uma hipótese falhada
   08-lacunas-e-padroes.md  repetições, coincidências, o mapa exato do espaço
+  09-modelo-e-auditor.md   o modelo de produção e o sistema que o verifica
 ```
 
-`pytest tests/ -q` → 59 testes. As probabilidades oficiais
+`pytest tests/ -q` → 65 testes. As probabilidades oficiais
 (1 em 139.838.160) são calculadas de raiz e verificadas.
 
 ---

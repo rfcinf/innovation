@@ -8,6 +8,8 @@ Interface de linha de comandos.
     python -m euromillions.cli valor [--jackpot 100e6]
     python -m euromillions.cli estrelas
     python -m euromillions.cli carteira
+    python -m euromillions.cli modelo
+    python -m euromillions.cli auditoria
     python -m euromillions.cli padroes
     python -m euromillions.cli m1lhao
     python -m euromillions.cli elasticidade
@@ -27,8 +29,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-from . import (config, elasticity, ev, m1lhao, machines, patterns, portfolio,
-               quantum, randomness, stars)
+from . import (audit, config, elasticity, ev, m1lhao, machines, model as mdl,
+               patterns, portfolio, quantum, randomness, stars)
 from . import backtest as bt
 from . import dataset as ds
 from . import optimizer as opt
@@ -405,6 +407,75 @@ def cmd_padroes(args) -> None:
     print("  Ausência sem expectativa não é evidência — é aritmética mal lida.")
 
 
+def cmd_modelo(args) -> None:
+    _hr("MODELO CONSOLIDADO")
+    m = mdl.EuroMillionsModel.fit()
+    print(m.describe())
+
+    _hr("DE ONDE VEM CADA NÚMERO QUE O MODELO USA")
+    print(m.provenance().to_string(index=False))
+
+    ass = m.assumptions()
+    _hr(f"SUPOSIÇÕES POR VALIDAR ({len(ass)}) — é aqui que vive o próximo erro")
+    for r in ass.itertuples():
+        print(f"  · {r.nome}: {r.valor}")
+        print(f"    {r.nota}")
+
+    _hr(f"RECOMENDAÇÃO — jackpot €{args.jackpot/1e6:.0f}M")
+    rec = m.recommend(
+        n_tickets=args.bilhetes, jackpot_eur=args.jackpot,
+        n_candidates=args.candidatos, allow_network=not args.offline,
+    )
+    print(rec.to_frame().to_string(index=False))
+    print()
+    print(f"  popularidade média : {rec.popularidade_media:.3f}x")
+    print(f"  cobertura          : {rec.cobertura} de 50 números")
+    print(f"  P(não ganhar nada) : {rec.p_nada:.4f}")
+    print(f"  custo              : €{rec.custo:.2f}")
+    print(f"  valor esperado     : €{rec.ev_total:.2f}  "
+          f"(dos quais €{rec.ev_m1lhao*args.bilhetes:.2f} do M1lhão)")
+    print(f"  perda esperada     : €{rec.custo - rec.ev_total:.2f}")
+
+    if args.avaliar:
+        nums = [int(x) for x in args.avaliar.split(",")[:5]]
+        strs = [int(x) for x in args.avaliar.split(",")[5:7]]
+        _hr("AVALIAÇÃO DA SUA APOSTA")
+        for k, v in m.score(nums, strs, args.jackpot).items():
+            print(f"  {k:<24} {v}")
+
+    if args.json:
+        _hr("MODELO EM JSON")
+        print(m.to_json())
+
+
+def cmd_auditoria(args) -> None:
+    _hr("AUDITORIA DO SISTEMA")
+    print("  A verificar dados, modelos, deriva, suposições, afirmações e lacunas...\n")
+    rep, gaps = audit.run_audit(n_sim=args.sim, skip_slow=args.rapido)
+
+    print(rep)
+
+    if len(gaps):
+        _hr("VARRIMENTOS DE LACUNAS")
+        print(gaps.to_string(index=False))
+
+    _hr("RESUMO")
+    tab = rep.to_frame()
+    print(tab.groupby("gravidade").size().to_string())
+    print()
+    print(f"  VEREDICTO: {rep.verdict()}")
+    if rep.criticos:
+        print("\n  Problemas críticos a resolver antes de confiar no modelo:")
+        for f in rep.criticos:
+            print(f"    · [{f.area}] {f.check}")
+    if rep.avisos:
+        print("\n  Avisos (não bloqueiam, mas é aí que vive o próximo erro):")
+        for f in rep.avisos:
+            print(f"    · [{f.area}] {f.check}")
+    if rep.criticos:
+        sys.exit(1)
+
+
 def cmd_valor(args) -> None:
     try:
         bd = ds.load_breakdown()
@@ -583,6 +654,21 @@ def main(argv: list[str] | None = None) -> None:
 
     e = sub.add_parser("estrelas", help="popularidade medida das estrelas")
     e.set_defaults(func=cmd_estrelas)
+
+    mo = sub.add_parser("modelo", help="modelo consolidado e recomendação")
+    mo.add_argument("--bilhetes", type=int, default=5)
+    mo.add_argument("--jackpot", type=float, default=60e6)
+    mo.add_argument("--candidatos", type=int, default=3000)
+    mo.add_argument("--offline", action="store_true")
+    mo.add_argument("--json", action="store_true")
+    mo.add_argument("--avaliar", type=str, default=None,
+                    help="avaliar uma aposta: 'n1,n2,n3,n4,n5,e1,e2'")
+    mo.set_defaults(func=cmd_modelo)
+
+    au = sub.add_parser("auditoria", help="auditar o sistema e caçar lacunas")
+    au.add_argument("--sim", type=int, default=4000)
+    au.add_argument("--rapido", action="store_true", help="só verificações rápidas")
+    au.set_defaults(func=cmd_auditoria)
 
     pa = sub.add_parser("padroes", help="repetições, coincidências e o mapa do espaço")
     pa.set_defaults(func=cmd_padroes)
