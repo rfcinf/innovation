@@ -96,24 +96,30 @@ class Filters:
 
 def star_popularity_prior(star_pool: int = 12) -> np.ndarray:
     """
-    As estrelas sofrem do mesmo viés, agravado: com um domínio de 1 a 12,
-    *todas* as estrelas são datas plausíveis (dias e meses), e as baixas
-    concentram muita procura. As altas (10, 11, 12) e sobretudo os pares
-    que as combinam são relativamente sub-jogados.
+    Recurso APENAS para quando não há dados de quebra de prémios.
 
-    Devolve um peso relativo de procura por estrela (normalizado a média 1).
+    Isto é um palpite, e um palpite medíocre: captava cerca de metade do
+    efeito real e errava a estrela 1 (que supunha popular, e é das menos
+    jogadas). Use-se `stars.StarPopularity`, que mede em vez de adivinhar.
     """
     w = np.ones(star_pool)
     for i in range(star_pool):
         n = i + 1
-        if n <= 9:
-            w[i] = 1.12        # dias/meses de 1 a 9: máxima sobreposição com datas
-        elif n <= 12:
-            w[i] = 0.80
+        w[i] = 1.12 if n <= 9 else 0.80
     return w / w.mean()
 
 
-def star_pair_popularity(pair: tuple[int, int], star_pool: int = 12) -> float:
+def star_pair_popularity(
+    pair: tuple[int, int], star_pool: int = 12, star_model=None
+) -> float:
+    """
+    Popularidade de um par de estrelas.
+
+    Com `star_model` (um `stars.StarPopularity` estimado a partir de ~5000
+    observações), isto é uma medição. Sem ele, é o palpite acima.
+    """
+    if star_model is not None:
+        return star_model.pair_popularity((int(pair[0]), int(pair[1])))
     w = star_popularity_prior(star_pool)
     return float(w[pair[0] - 1] * w[pair[1] - 1])
 
@@ -152,14 +158,23 @@ def optimize(
     filters: Filters | None = None,
     min_disjoint: int = 3,
     allow_network: bool = True,
+    star_model=None,
+    maximize_coverage: bool = True,
+    popularity_quantile: float = 0.05,
     verbose: bool = False,
 ) -> tuple[list[Ticket], pd.DataFrame]:
     """
-    Gera candidatos com entropia quântica e devolve os `n_tickets` com
-    melhor valor esperado.
+    Gera candidatos com entropia quântica e escolhe a melhor carteira.
 
-    `min_disjoint`: nº mínimo de números diferentes entre bilhetes
-    escolhidos, para que o conjunto não seja uma aposta única disfarçada.
+    `maximize_coverage`: otimiza as duas alavancas (popularidade E
+    cobertura) em vez de só o valor esperado por bilhete. Ver o comentário
+    extenso no corpo da função — desligar isto produz carteiras com melhor
+    EV individual e P(não ganhar nada) pior do que jogar ao acaso.
+
+    `popularity_quantile`: fração dos melhores candidatos por EV dentro da
+    qual se procura cobertura.
+
+    `min_disjoint`: usado apenas quando `maximize_coverage=False`.
     """
     filters = filters or Filters()
 
@@ -183,7 +198,7 @@ def optimize(
     combos = np.array(candidates)
     pop_main = model.predict_popularity(combos)
     pop_star = np.array(
-        [star_pair_popularity(tuple(s), star_pool) for s in star_candidates]
+        [star_pair_popularity(tuple(s), star_pool, star_model) for s in star_candidates]
     )
     popularity = pop_main * pop_star
 
@@ -206,29 +221,70 @@ def optimize(
     if verbose:
         print(f"  {len(candidates)} candidatos aceites em {attempts} propostas quânticas")
 
-    # Seleção com dispersão: rejeita bilhetes demasiado parecidos entre si.
+    # ------------------------------------------------------------------
+    # Seleção: as duas alavancas ao mesmo tempo.
+    #
+    # Ordenar apenas por EV parece óbvio e é um erro. As combinações de
+    # baixa popularidade concentram-se nos números altos (>31), por isso os
+    # melhores bilhetes individuais repetem os mesmos números entre si. O
+    # resultado é uma carteira com EV ótimo por bilhete mas com apenas ~19
+    # números distintos — mais sobreposta do que uma escolha aleatória, e
+    # com P(não ganhar nada) PIOR do que jogar ao acaso.
+    #
+    # As duas alavancas são independentes e ambas valem dinheiro:
+    #   popularidade baixa -> cheque maior quando se acerta
+    #   cobertura alta     -> menos vezes a sair de mãos vazias
+    #
+    # A solução é hierárquica: restringir primeiro ao quantil mais
+    # impopular (é aí que está o valor, e dentro dele o EV varia pouco), e
+    # só depois maximizar a cobertura por seleção gulosa.
+    # ------------------------------------------------------------------
+    order = np.argsort(-evs)
+    if maximize_coverage:
+        cutoff = max(n_tickets * 8, int(len(order) * popularity_quantile))
+        pool_idx = list(order[:cutoff])
+        chosen_idx: list[int] = [pool_idx[0]]
+        used_nums: set[int] = set(int(x) for x in combos[pool_idx[0]])
+        while len(chosen_idx) < n_tickets and len(chosen_idx) < len(pool_idx):
+            best, best_key = None, None
+            for i in pool_idx:
+                if i in chosen_idx:
+                    continue
+                new = len(set(int(x) for x in combos[i]) - used_nums)
+                key = (new, float(evs[i]))    # desempate pelo melhor EV
+                if best_key is None or key > best_key:
+                    best, best_key = i, key
+            if best is None:
+                break
+            chosen_idx.append(best)
+            used_nums |= set(int(x) for x in combos[best])
+        selected = chosen_idx
+    else:
+        selected = []
+        used: list[set[int]] = []
+        for idx in order:
+            cs = set(int(x) for x in combos[idx])
+            if any(len(cs - u) < min_disjoint for u in used):
+                continue
+            selected.append(int(idx))
+            used.append(cs)
+            if len(selected) >= n_tickets:
+                break
+
     chosen: list[Ticket] = []
-    used: list[set[int]] = []
-    for idx in np.argsort(-evs):
-        combo = combos[idx]
-        cs = set(int(x) for x in combo)
-        if any(len(cs - u) < min_disjoint for u in used):
-            continue
+    for idx in selected:
         r = expected_value(
             jackpot_eur, sales, float(popularity[idx]), star_pool, tier_prizes
         )
         chosen.append(
             Ticket(
-                mains=[int(x) for x in combo],
+                mains=[int(x) for x in combos[idx]],
                 stars=[int(x) for x in star_candidates[idx]],
                 popularity=float(popularity[idx]),
                 ev_liquido=r.ev_liquido,
                 retorno_por_euro=r.retorno_por_euro,
             )
         )
-        used.append(cs)
-        if len(chosen) >= n_tickets:
-            break
 
     return chosen, table
 
@@ -240,13 +296,16 @@ def compare_to_typical(
     sales: float,
     star_pool: int = 12,
     tier_prizes: dict[str, float] | None = None,
+    star_model=None,
 ) -> pd.DataFrame:
     """
     Compara a carteira escolhida com dois pontos de referência: uma aposta
     típica (popularidade 1.0) e uma aposta "de datas" (o erro mais comum).
     """
     date_combo = np.array([3, 7, 11, 19, 24])   # todos ≤31, padrão de aniversários
-    pop_date = float(model.predict_popularity(date_combo)[0]) * star_pair_popularity((3, 7), star_pool)
+    pop_date = float(model.predict_popularity(date_combo)[0]) * star_pair_popularity(
+        (3, 7), star_pool, star_model
+    )
     pop_ours = float(np.mean([t.popularity for t in tickets]))
 
     rows = []

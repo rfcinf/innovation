@@ -8,19 +8,33 @@ entropia quântica.
 
 ---
 
-## O resumo em três linhas
+## O resumo em quatro linhas
 
-1. **Não é possível prever os números.** Testámo-lo a sério — 12 famílias
-   de testes, correção para testes múltiplos, análise de potência. Zero
-   achados. Não por preconceito: por medição.
-2. **É possível prever com quantas pessoas vai dividir o prémio.** Isto é
-   novo, é mensurável, e valida-se fora da amostra com ρ = 0,411 e
-   p = 3,8 × 10⁻²⁵.
-3. **Isso vale +35% por aposta — e mesmo assim não chega para lucrar.** O
-   valor esperado máximo é €2,01 numa aposta de €2,50.
+1. **Não é possível prever os números.** 12 famílias de testes, correção
+   para testes múltiplos, análise de potência, e um backtest de 2 milhões
+   de apostas contra sorteios reais. Zero achados. Não por preconceito: por
+   medição.
+2. **É possível prever com quantas pessoas vai dividir o prémio.** Nos
+   números (ρ = 0,411, p = 3,8 × 10⁻²⁵) e, muito mais forte, nas estrelas
+   (ρ = 0,775, p = 2,5 × 10⁻¹⁸⁶). Ambos validados fora da amostra.
+3. **É possível reduzir a probabilidade de não ganhar nada** — de 0,80 para
+   0,646, sem gastar mais um cêntimo.
+4. **Tudo somado vale +36% por aposta — e mesmo assim não chega para
+   lucrar.** O valor esperado máximo é €2,01 numa aposta de €2,50.
 
-Os três resultados são verdadeiros ao mesmo tempo. O sistema entrega o
-segundo por inteiro e não finge sobre o terceiro.
+Os quatro resultados são verdadeiros ao mesmo tempo. O sistema entrega os
+três primeiros por inteiro e não finge sobre o quarto.
+
+### As três alavancas
+
+| alavanca | o que faz | ganho medido | validação |
+|---|---|---:|---|
+| popularidade dos números | cheque maior | ver abaixo | ρ = 0,411 fora da amostra |
+| popularidade das estrelas | cheque maior | par 2,35× | ρ = 0,775 fora da amostra |
+| cobertura da carteira | ganhar mais vezes | P(nada) 0,80 → 0,646 | 1030 sorteios reais |
+
+Combinadas: **+36% no valor esperado** e **P(algum prémio) de 19% para
+36%**, ao mesmo preço e com a mesma probabilidade de jackpot.
 
 ---
 
@@ -62,23 +76,28 @@ python -m euromillions.cli relatorio           # corre tudo
 
 python -m euromillions.cli aleatoriedade       # bateria de testes
 python -m euromillions.cli maquinas            # equipamento e viés por segmento
-python -m euromillions.cli popularidade        # modelo de escolha humana
+python -m euromillions.cli popularidade        # modelo de escolha humana (números)
+python -m euromillions.cli estrelas            # popularidade medida das estrelas
+python -m euromillions.cli carteira            # reduzir P(não ganhar nada)
 python -m euromillions.cli valor               # EV e ponto de equilíbrio
-python -m euromillions.cli backtest            # validação fora da amostra
+python -m euromillions.cli backtest            # walk-forward + fora da amostra
 python -m euromillions.cli jogar --jackpot 111e6 --bilhetes 5
 ```
 
 Exemplo de saída de `jogar`:
 
 ```
- 1 38 40 41 45   ★ 10 11   popularidade 0.30x   EV €1.276
- 3 36 38 42 45   ★ 10 11   popularidade 0.36x   EV €1.232
-15 16 33 34 50   ★ 10 12   popularidade 0.37x   EV €1.227
+ 4 34 40 41 50   ★ 10 12   popularidade 0.35x   EV €1.237
+16 17 22 48 50   ★ 10 12   popularidade 0.37x   EV €1.224
+ 2 38 40 41 49   ★  8 12   popularidade 0.41x   EV €1.204
 
                  estratégia  popularidade   EV_€   ganho_vs_datas
-aposta de datas (todos ≤31)         1.977  0.910              0%
-   aposta média / aleatória         1.000  1.030          +13.2%
-         carteira otimizada         0.367  1.228          +34.9%
+aposta de datas (todos ≤31)         2.351  0.878              0%
+   aposta média / aleatória         1.000  1.030          +17.3%
+         carteira otimizada         0.429  1.193          +35.8%
+
+  números distintos cobertos : 25 de 50 (50.0%)
+  P(não ganhar nada)         : 0.6461
 ```
 
 ---
@@ -92,11 +111,13 @@ src/euromillions/
   dataset.py       normalização, validação, reconstrução de vendas
   randomness.py    12 famílias de testes + FDR + potência
   machines.py      equipamento, viés por segmento, custo da diluição
-  popularity.py    GLM de Poisson por IRLS — o núcleo
+  popularity.py    GLM de Poisson por IRLS — popularidade dos números
+  stars.py         popularidade medida das estrelas (R²=0,59, 3090 obs.)
+  portfolio.py     cobertura: minimizar P(não ganhar nada)
   ev.py            valor esperado, partilha pari-mutuel, fiscalidade
   quantum.py       QRNG (ANU / LfD) com certificação da fonte
-  optimizer.py     filtros ditados pelos dados + seleção por EV
-  backtest.py      avaliação honesta, fora da amostra
+  optimizer.py     filtros ditados pelos dados + EV e cobertura em conjunto
+  backtest.py      walk-forward sobre sorteios reais + validação fora da amostra
   cli.py           interface
 
 docs/
@@ -104,9 +125,10 @@ docs/
   02-maquinas-e-bolas.md Ryo-Catteau Stresa e Pâquerette
   03-a-brecha-real.md    onde está a brecha e qual é o seu tamanho
   04-resultados.md       todos os números
+  05-segunda-ronda.md    estrelas, carteira, backtest walk-forward
 ```
 
-`pytest tests/ -q` → 34 testes. As probabilidades oficiais
+`pytest tests/ -q` → 40 testes. As probabilidades oficiais
 (1 em 139.838.160) são calculadas de raiz e verificadas.
 
 ---
@@ -142,6 +164,17 @@ tomar:
   que consecutivos são *sub-jogados* (β < 0, p < 0,0001) e portanto
   valiosos. Os filtros foram reescritos ao contrário, e há testes a impedir
   que a intuição volte a entrar.
+
+- **Corrigi barras de erro que me favoreciam.** O backtest tratava 309.000
+  pares sorteio×carteira como independentes, quando só havia 300 carteiras
+  independentes. As margens corretas são várias vezes maiores. As
+  conclusões sobreviveram — mas isso só se sabe depois de as calcular bem.
+
+- **Apanhei o otimizador a sabotar-se.** Ordenar candidatos só por valor
+  esperado dava carteiras com 19 números distintos e P(nada) *pior do que
+  jogar ao acaso*: as combinações impopulares concentram-se nos números
+  altos, e os melhores bilhetes repetiam-se entre si. As duas alavancas
+  estão agora otimizadas em conjunto, hierarquicamente.
 
 O número 22 saiu 21,8% abaixo do esperado, com um défice que se agrava
 monotonamente ao longo de quatro décadas de sorteios. Parece uma bola

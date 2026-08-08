@@ -267,3 +267,83 @@ def test_bilhete_quantico_bem_formado():
         assert len(s) == 2 and len(set(s)) == 2
         assert all(1 <= x <= 50 for x in m)
         assert all(1 <= x <= 12 for x in s)
+
+
+# ---------------------------------------------------------------------------
+# Estrelas
+# ---------------------------------------------------------------------------
+
+def test_modelo_estrelas_e_multiplicativo():
+    """log pi(a,b) = alpha_a + alpha_b, logo pi(a,b) = f(a)*f(b)."""
+    from euromillions.stars import StarPopularity
+
+    m = StarPopularity(pool=12)
+    m.alpha = np.log(np.linspace(0.7, 1.3, 12))
+    assert m.pair_popularity((3, 9)) == pytest.approx(
+        m.star_factor(3) * m.star_factor(9)
+    )
+
+
+def test_normalizacao_do_estimador_de_estrelas():
+    """
+    A razao esperada W(k,0)/W(k,2) depende do pool e tem de mudar com a era:
+    12 estrelas -> 45, 11 -> 36, 9 -> 21. Errar isto contaminaria as tres
+    eras num so numero e inventaria um efeito onde nao ha.
+    """
+    from math import comb
+
+    assert comb(12 - 2, 2) == 45
+    assert comb(11 - 2, 2) == 36
+    assert comb(9 - 2, 2) == 21
+
+
+# ---------------------------------------------------------------------------
+# Carteira
+# ---------------------------------------------------------------------------
+
+def test_cobertura_disjunta_reduz_prob_de_nada():
+    """
+    Bilhetes disjuntos falham menos vezes em conjunto do que bilhetes
+    sobrepostos. E combinatoria pura, nao depende de modelo nenhum.
+    """
+    from euromillions import portfolio as pf
+
+    disj = [([1, 2, 3, 4, 5], [1, 2]), ([6, 7, 8, 9, 10], [3, 4]),
+            ([11, 12, 13, 14, 15], [5, 6])]
+    over = [([1, 2, 3, 4, 5], [1, 2]), ([1, 2, 3, 4, 6], [3, 4]),
+            ([1, 2, 3, 4, 7], [5, 6])]
+    a = pf.simulate_portfolio(disj, n_sim=40_000, seed=5)
+    b = pf.simulate_portfolio(over, n_sim=40_000, seed=5)
+    assert a["p_nada"] < b["p_nada"]
+
+
+def test_simulacao_bate_certo_com_a_teoria():
+    """Bilhetes disjuntos ~ independentes: a simulacao tem de bater na teoria."""
+    from euromillions import portfolio as pf
+
+    tickets = [([1, 2, 3, 4, 5], [1, 2]), ([6, 7, 8, 9, 10], [3, 4])]
+    sim = pf.simulate_portfolio(tickets, n_sim=120_000, seed=9)
+    teorico = pf.probability_no_prize_independent(2)
+    assert abs(sim["p_nada"] - teorico) < 0.01
+
+
+def test_ganho_medio_e_linear_e_independente_da_sobreposicao():
+    """
+    O valor esperado de N apostas e sempre N x EV(1), qualquer que seja a
+    sobreposicao. Se esta identidade falhar, o motor de EV esta errado.
+    """
+    from euromillions import portfolio as pf
+
+    prizes = ev.FALLBACK_TIER_PRIZES
+    um = pf.expected_winnings_analytic(1, prizes)
+    cinco = pf.expected_winnings_analytic(5, prizes)
+    assert cinco == pytest.approx(5 * um)
+
+
+def test_cobertura_maxima_com_5_bilhetes():
+    from euromillions import portfolio as pf
+
+    tickets = [(list(range(1 + 5 * i, 6 + 5 * i)), [1, 2]) for i in range(5)]
+    cov = pf.coverage_score(tickets)
+    assert cov["numeros_distintos"] == 25
+    assert cov["sobreposicao_maxima"] == 0

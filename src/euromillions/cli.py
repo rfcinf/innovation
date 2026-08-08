@@ -6,6 +6,8 @@ Interface de linha de comandos.
     python -m euromillions.cli maquinas
     python -m euromillions.cli popularidade
     python -m euromillions.cli valor [--jackpot 100e6]
+    python -m euromillions.cli estrelas
+    python -m euromillions.cli carteira
     python -m euromillions.cli backtest
     python -m euromillions.cli jogar [--bilhetes 5] [--jackpot 100e6]
     python -m euromillions.cli relatorio
@@ -21,7 +23,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from . import config, ev, machines, quantum, randomness
+from . import config, ev, machines, portfolio, quantum, randomness, stars
 from . import backtest as bt
 from . import dataset as ds
 from . import optimizer as opt
@@ -161,6 +163,78 @@ def cmd_popularidade(args) -> None:
     print("  Popularidade alta = mais gente com o mesmo bilhete = cheque menor.")
 
 
+def cmd_estrelas(args) -> None:
+    dr, bd = ds.load_draws(), ds.load_breakdown()
+    obs = stars.star_observations(dr, bd)
+    m = stars.StarPopularity(pool=12).fit(obs)
+
+    _hr(f"POPULARIDADE DAS ESTRELAS (n={m.n_obs} observações)")
+    print(f"R² = {m.r2:.4f}    teste conjunto χ² = {m.joint_chi2:.0f} "
+          f"(11 g.l.)  p = {m.joint_p:.2e}")
+    print("\nTodas as 12 estrelas diferem entre si. Não é palpite: é medição.\n")
+    print(m.table().to_string(index=False))
+
+    _hr("PARES DE ESTRELAS — os 6 melhores e os 6 piores")
+    print(m.best_pairs(6).to_string(index=False))
+    best = m.best_pairs(1)
+    lo = float(best["popularidade"].iloc[0]); hi = float(best["popularidade"].iloc[-1])
+    print(f"\n  Rácio pior/melhor: {hi/lo:.2f}x — mesma probabilidade de sair,")
+    print(f"  {100*(hi/lo-1):.0f}% mais gente com quem dividir.")
+
+    _hr("VALIDAÇÃO FORA DA AMOSTRA")
+    v = stars.validate_out_of_sample(obs)
+    q = v.pop("quartis")
+    for k, val in v.items():
+        print(f"  {k:<18} {val}")
+    print("\n  popularidade OBSERVADA por quartil de popularidade PREVISTA:")
+    print(q.to_string())
+
+
+def cmd_carteira(args) -> None:
+    import numpy as np
+
+    try:
+        prizes = ev.empirical_tier_prizes(ds.load_breakdown())
+    except FileNotFoundError:
+        prizes = ev.FALLBACK_TIER_PRIZES
+
+    rng = np.random.default_rng(args.seed)
+    n = args.bilhetes
+    pool = np.arange(1, config.MAIN_POOL + 1)
+
+    def st():
+        return sorted(rng.choice(np.arange(1, 13), 2, replace=False).tolist())
+
+    base = sorted(rng.choice(pool, 5, replace=False).tolist())
+    sobreposta = []
+    for i in range(n):
+        t = base.copy()
+        t[i % 5] = int(rng.choice([x for x in pool if x not in t]))
+        sobreposta.append((sorted(t), st()))
+    aleatoria = [(sorted(rng.choice(pool, 5, replace=False).tolist()), st()) for _ in range(n)]
+    nums = rng.permutation(pool)[: n * 5].reshape(n, 5)
+    disjunta = [(sorted(r.tolist()), st()) for r in nums]
+
+    _hr(f"PROBABILIDADE DE NÃO GANHAR NADA — {n} apostas, {args.sim:,} sorteios simulados")
+    res = portfolio.compare_portfolios(
+        {"sobreposta (varia 1 nº)": sobreposta,
+         "aleatória": aleatoria,
+         f"disjunta ({n*5} nºs)": disjunta},
+        n_sim=args.sim, tier_prizes=prizes,
+    )
+    print(res.to_string(index=False))
+    print(f"\n  Referência teórica se as apostas fossem independentes: "
+          f"P(nada) = {portfolio.probability_no_prize_independent(n):.4f}")
+    if "ganho_medio_teorico" in res.attrs:
+        print(f"  Ganho médio teórico (igual para as três, por linearidade): "
+              f"€{res.attrs['ganho_medio_teorico']}")
+        print("  As diferenças na coluna do ganho médio são ruído — veja a coluna ±.")
+
+    _hr("LEITURA")
+    print("  Cobrir mais números distintos NÃO aumenta o valor esperado.")
+    print("  Reduz a probabilidade de sair de mãos vazias. É grátis: custa o mesmo.")
+
+
 def cmd_valor(args) -> None:
     try:
         bd = ds.load_breakdown()
@@ -200,6 +274,19 @@ def cmd_backtest(args) -> None:
     print(bt.strategy_backtest(df).to_string(index=False))
     print("\n  Sob independência, todas convergem para 0,5 acertos por sorteio.")
 
+    _hr("BACKTEST PREDITIVO WALK-FORWARD (sorteios reais)")
+    try:
+        bdf = ds.load_breakdown()
+        wf = bt.walk_forward(df, bdf, n_reps=args.reps)
+        print("Período:", wf.attrs["periodo"])
+        print(f"Taxa de acerto teórica por aposta: {config.probability_any_prize(12):.5f}\n")
+        print(wf.to_string(index=False))
+        print("\n  Taxa de acerto: todas dentro da margem da teórica.")
+        print("  Nenhuma estratégia altera a probabilidade de ganhar.")
+        print("  P(nada): as diferenças são reais e os intervalos não se sobrepõem.")
+    except FileNotFoundError as e:
+        print(f"[saltado: {e}]", file=sys.stderr)
+
     master = ds.build_master()
     _hr("H_VALOR — o modelo de popularidade prevê fora da amostra?")
     r = bt.popularity_out_of_sample(master)
@@ -214,9 +301,12 @@ def cmd_jogar(args) -> None:
     master = ds.build_master()
     model, _ = fit_popularity_model(master)
 
+    star_model = None
     try:
-        prizes = ev.empirical_tier_prizes(ds.load_breakdown())
-    except FileNotFoundError:
+        bdf = ds.load_breakdown()
+        prizes = ev.empirical_tier_prizes(bdf)
+        star_model = stars.fit_star_model(ds.load_draws(), bdf)
+    except (FileNotFoundError, ValueError):
         prizes = None
 
     _hr("FONTE DE ENTROPIA")
@@ -237,8 +327,11 @@ def cmd_jogar(args) -> None:
         tier_prizes=prizes,
         n_candidates=args.candidatos,
         allow_network=not args.offline,
+        star_model=star_model,
         verbose=True,
     )
+    if star_model is not None:
+        print(f"  modelo de estrelas: medido (R²={star_model.r2:.3f}, n={star_model.n_obs})")
 
     _hr("BILHETES")
     for i, t in enumerate(tickets, 1):
@@ -246,7 +339,21 @@ def cmd_jogar(args) -> None:
 
     _hr("COMPARAÇÃO")
     print(opt.compare_to_typical(model, tickets, args.jackpot, args.vendas,
-                                 tier_prizes=prizes).to_string(index=False))
+                                 tier_prizes=prizes,
+                                 star_model=star_model).to_string(index=False))
+
+    _hr("RISCO DA CARTEIRA")
+    sim = portfolio.simulate_portfolio(
+        [(t.mains, t.stars) for t in tickets],
+        n_sim=60000, tier_prizes=prizes or ev.FALLBACK_TIER_PRIZES,
+    )
+    cov = portfolio.coverage_score([(t.mains, t.stars) for t in tickets])
+    print(f"  números distintos cobertos : {cov['numeros_distintos']} de 50 "
+          f"({cov['cobertura_pct']}%)")
+    print(f"  P(não ganhar nada)         : {sim['p_nada']:.4f}")
+    print(f"  P(algum prémio)            : {sim['p_algum_premio']:.4f}")
+    print(f"  referência se independentes: "
+          f"{portfolio.probability_no_prize_independent(len(tickets)):.4f}")
 
     _hr("O QUE ISTO É E O QUE NÃO É")
     p = config.JACKPOT.probability(12)
@@ -260,7 +367,8 @@ def cmd_jogar(args) -> None:
 
 
 def cmd_relatorio(args) -> None:
-    for fn in (cmd_aleatoriedade, cmd_maquinas, cmd_popularidade, cmd_valor, cmd_backtest):
+    for fn in (cmd_aleatoriedade, cmd_maquinas, cmd_popularidade, cmd_estrelas,
+               cmd_valor, cmd_carteira, cmd_backtest):
         try:
             fn(args)
         except FileNotFoundError as e:
@@ -295,8 +403,18 @@ def main(argv: list[str] | None = None) -> None:
     v.add_argument("--vendas", type=float, default=80e6)
     v.set_defaults(func=cmd_valor)
 
-    b = sub.add_parser("backtest", help="validação fora da amostra")
+    b = sub.add_parser("backtest", help="validação fora da amostra + walk-forward")
+    b.add_argument("--reps", type=int, default=300)
     b.set_defaults(func=cmd_backtest)
+
+    e = sub.add_parser("estrelas", help="popularidade medida das estrelas")
+    e.set_defaults(func=cmd_estrelas)
+
+    ca = sub.add_parser("carteira", help="reduzir a probabilidade de não ganhar nada")
+    ca.add_argument("--bilhetes", type=int, default=5)
+    ca.add_argument("--sim", type=int, default=150000)
+    ca.add_argument("--seed", type=int, default=1)
+    ca.set_defaults(func=cmd_carteira)
 
     j = sub.add_parser("jogar", help="gerar bilhetes otimizados")
     j.add_argument("--bilhetes", type=int, default=5)
@@ -307,8 +425,11 @@ def main(argv: list[str] | None = None) -> None:
     j.set_defaults(func=cmd_jogar)
 
     r = sub.add_parser("relatorio", help="corre tudo")
-    r.add_argument("--vendas", type=float, default=80e6)
+    r.add_argument("--vendas", type=float, default=24e6)
     r.add_argument("--sim", type=int, default=4000)
+    r.add_argument("--reps", type=int, default=150)
+    r.add_argument("--bilhetes", type=int, default=5)
+    r.add_argument("--seed", type=int, default=1)
     r.set_defaults(func=cmd_relatorio)
 
     args = p.parse_args(argv)

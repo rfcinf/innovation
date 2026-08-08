@@ -155,6 +155,216 @@ def popularity_out_of_sample(
     }
 
 
+# ---------------------------------------------------------------------------
+# Backtest preditivo walk-forward, sobre sorteios reais
+# ---------------------------------------------------------------------------
+
+def _make_portfolio(strategy: str, rng: np.random.Generator, n_tickets: int,
+                    star_pool: int, filters=None) -> tuple[np.ndarray, np.ndarray]:
+    """Gera uma carteira segundo a estratégia indicada."""
+    from .optimizer import Filters
+
+    pool = np.arange(1, config.MAIN_POOL + 1)
+    spool = np.arange(1, star_pool + 1)
+
+    if strategy == "datas":
+        # O erro mais comum: só números ≤31, estrelas baixas.
+        mains = np.array([
+            np.sort(rng.choice(np.arange(1, 32), config.MAIN_PICK, replace=False))
+            for _ in range(n_tickets)
+        ])
+        stars = np.array([
+            np.sort(rng.choice(np.arange(1, 10), config.STAR_PICK, replace=False))
+            for _ in range(n_tickets)
+        ])
+        return mains, stars
+
+    if strategy == "sobreposta":
+        # Variar 1-2 números a partir de uma base — muito frequente na prática.
+        base = np.sort(rng.choice(pool, config.MAIN_PICK, replace=False))
+        rows = []
+        for i in range(n_tickets):
+            t = base.copy()
+            alt = rng.choice([x for x in pool if x not in t])
+            t[i % config.MAIN_PICK] = alt
+            rows.append(np.sort(t))
+        mains = np.array(rows)
+        stars = np.array([
+            np.sort(rng.choice(spool, config.STAR_PICK, replace=False))
+            for _ in range(n_tickets)
+        ])
+        return mains, stars
+
+    if strategy == "aleatoria":
+        mains = np.array([
+            np.sort(rng.choice(pool, config.MAIN_PICK, replace=False))
+            for _ in range(n_tickets)
+        ])
+        stars = np.array([
+            np.sort(rng.choice(spool, config.STAR_PICK, replace=False))
+            for _ in range(n_tickets)
+        ])
+        return mains, stars
+
+    if strategy == "otimizada":
+        # Cobertura disjunta + filtros ditados pelos dados + estrelas altas.
+        filters = filters or Filters()
+        need = n_tickets * config.MAIN_PICK
+        for _ in range(400):
+            perm = rng.permutation(pool)[:need].reshape(n_tickets, config.MAIN_PICK)
+            perm = np.sort(perm, axis=1)
+            if all(filters.accepts(row) for row in perm):
+                mains = perm
+                break
+        else:
+            mains = np.sort(rng.permutation(pool)[:need].reshape(n_tickets, -1), axis=1)
+        # Estrelas: as menos jogadas segundo o modelo medido (10, 11, 12).
+        high = spool[spool >= max(1, star_pool - 2)]
+        stars = np.array([
+            np.sort(rng.choice(high, config.STAR_PICK, replace=False))
+            for _ in range(n_tickets)
+        ])
+        return mains, stars
+
+    raise ValueError(f"estratégia desconhecida: {strategy}")
+
+
+def walk_forward(
+    draws: pd.DataFrame,
+    breakdown: pd.DataFrame,
+    strategies: tuple[str, ...] = ("datas", "sobreposta", "aleatoria", "otimizada"),
+    n_tickets: int = 5,
+    since: str = "2016-09-27",
+    n_reps: int = 400,
+    seed: int = 2024,
+) -> pd.DataFrame:
+    """
+    Backtest preditivo sobre sorteios reais.
+
+    Para cada estratégia gera `n_reps` carteiras independentes e confronta
+    cada uma com **todos** os sorteios reais do período, usando os prémios
+    históricos efetivamente pagos em cada escalão e em cada sorteio.
+
+    O QUE ESTE BACKTEST PODE E NÃO PODE MEDIR — e é essencial perceber a
+    diferença:
+
+    * PODE medir a taxa de acerto por escalão e a probabilidade de sair sem
+      nada. São eventos frequentes (P(algum prémio) ≈ 1/13 por aposta), há
+      dados que cheguem, e as diferenças entre estratégias saem com
+      precisão.
+
+    * NÃO PODE medir a vantagem de popularidade. O prémio histórico de cada
+      escalão é um número fixo, já dividido pelos vencedores que realmente
+      existiram. Não há forma de o histórico revelar quanto teríamos
+      recebido com uma combinação diferente. Essa vantagem vive quase toda
+      nos escalões altos, que num backtest de algumas centenas de sorteios
+      nunca são atingidos.
+
+    A vantagem de popularidade está validada noutro sítio e de outra forma:
+    em `popularity_out_of_sample()`, que prevê fora da amostra quantas
+    pessoas partilham cada combinação. Confundir as duas coisas levaria a
+    concluir, erradamente, que a vantagem não existe só porque este teste
+    não a consegue ver.
+    """
+    d = draws[draws["date"].astype(str) >= since].reset_index(drop=True)
+    if len(d) < 50:
+        raise ValueError("período de teste demasiado curto")
+
+    drawn_m = d[MAIN_COLS].to_numpy(int)
+    drawn_s = d[["s1", "s2"]].to_numpy(int)
+    star_pool = int(d["star_pool"].iloc[-1])
+
+    # Prémios reais pagos, por sorteio e escalão.
+    piv = breakdown.pivot_table(
+        index="date", columns="tier", values="prize_eur", aggfunc="first"
+    )
+    prize_lookup = {
+        t.label: piv[t.label].reindex(d["date"]).to_numpy(dtype=float)
+        if t.label in piv else np.full(len(d), np.nan)
+        for t in config.TIERS
+    }
+    tier_index = {t.label: t for t in config.TIERS}
+
+    rng = np.random.default_rng(seed)
+    rows = []
+
+    for strat in strategies:
+        n_nothing = 0
+        n_port = 0
+        winnings: list[float] = []
+        hits: dict[str, int] = {}
+        n_ticket_draws = 0
+        # Estatísticas POR RÉPLICA. São estas que dão a incerteza correta:
+        # os 1030 sorteios enfrentados por uma mesma carteira não são
+        # observações independentes — partilham os mesmos números. A unidade
+        # independente é a carteira, e há apenas `n_reps` delas.
+        rep_p_nada: list[float] = []
+        rep_retorno: list[float] = []
+        rep_taxa: list[float] = []
+
+        for _ in range(n_reps):
+            mains, stars = _make_portfolio(strat, rng, n_tickets, star_pool)
+
+            # Interseções vetorizadas contra todos os sorteios do período.
+            # (T, n_tickets)
+            match_m = np.zeros((len(d), n_tickets), dtype=np.int8)
+            match_s = np.zeros((len(d), n_tickets), dtype=np.int8)
+            for j in range(n_tickets):
+                match_m[:, j] = np.isin(drawn_m, mains[j]).sum(axis=1)
+                match_s[:, j] = np.isin(drawn_s, stars[j]).sum(axis=1)
+
+            payout = np.zeros(len(d))
+            any_win = np.zeros(len(d), dtype=bool)
+            rep_hits = 0
+            for label, tier in tier_index.items():
+                hit = (match_m == tier.mains) & (match_s == tier.stars)
+                if not hit.any():
+                    continue
+                cnt = hit.sum(axis=1)
+                hits[label] = hits.get(label, 0) + int(cnt.sum())
+                rep_hits += int(cnt.sum())
+                prizes = np.nan_to_num(prize_lookup[label], nan=0.0)
+                payout += cnt * prizes
+                any_win |= cnt > 0
+
+            n_nothing += int((~any_win).sum())
+            n_port += len(d)
+            n_ticket_draws += len(d) * n_tickets
+            winnings.append(float(payout.sum()))
+
+            rep_cost = len(d) * n_tickets * config.TICKET_PRICE_EUR
+            rep_p_nada.append(float((~any_win).mean()))
+            rep_retorno.append(float(payout.sum() / rep_cost))
+            rep_taxa.append(rep_hits / (len(d) * n_tickets))
+
+        total_win = float(np.sum(winnings))
+        cost = n_ticket_draws * config.TICKET_PRICE_EUR
+
+        def _ci(vals: list[float]) -> float:
+            a = np.asarray(vals, dtype=float)
+            return float(1.96 * a.std(ddof=1) / np.sqrt(len(a)))
+
+        rows.append(
+            {
+                "estratégia": strat,
+                "carteiras": n_reps,
+                "apostas": n_ticket_draws,
+                "P(nada)": round(float(np.mean(rep_p_nada)), 4),
+                "±95%": round(_ci(rep_p_nada), 4),
+                "taxa_acerto": round(float(np.mean(rep_taxa)), 5),
+                "±95%_taxa": round(_ci(rep_taxa), 5),
+                "retorno_€/€": round(total_win / cost, 4),
+                "±95%_ret": round(_ci(rep_retorno), 4),
+                "custo_€": round(cost, 0),
+            }
+        )
+
+    out = pd.DataFrame(rows)
+    out.attrs["hits"] = hits
+    out.attrs["periodo"] = f"{d['date'].min()} → {d['date'].max()} ({len(d)} sorteios)"
+    return out
+
+
 def jackpot_sharing_reality(master: pd.DataFrame) -> pd.DataFrame:
     """
     A partilha não é hipótese: aconteceu, repetidamente.
