@@ -732,3 +732,74 @@ def test_plano_nao_promete_lucro():
 
     tab = strategy.budget_plans(520.0)
     assert tab["retorno €/€"].max() < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Totoloto
+# ---------------------------------------------------------------------------
+
+def test_totoloto_matriz_e_odds():
+    from math import comb
+
+    from euromillions import totoloto as T
+
+    assert T.MAIN_COMBINATIONS == comb(49, 5) == 1_906_884
+    assert T.TOTAL_COMBINATIONS == 24_789_492
+
+
+def test_totoloto_estrutura_bate_com_o_oficial():
+    """
+    A Santa Casa publica "1 em 7" para ganhar algum premio, mas nao publica
+    a probabilidade de cada escalao. Reconstruir os escaloes de raiz e obter
+    1 em 6,86 e a unica forma de confirmar que a estrutura assumida esta
+    certa — sem este confronto seria um palpite.
+    """
+    from euromillions import totoloto as T
+
+    p = T.probability_any_prize()
+    assert 1 / p == pytest.approx(7.0, abs=0.2)
+
+
+def test_totoloto_numero_da_sorte_acumula():
+    """
+    O Nº da Sorte e um premio a parte que acumula com os escaloes de
+    numeros. Somar probabilidades daria um valor errado; o calculo tem de
+    ser pelo complementar.
+    """
+    from euromillions import totoloto as T
+
+    soma_ingenua = sum(t.probability() for t in T.TIERS) + 1 / T.LUCKY_POOL
+    correto = T.probability_any_prize()
+    assert correto < soma_ingenua
+
+
+def test_totoloto_melhor_por_euro_que_euromilhoes():
+    """5,6x melhores odds a 2,5x menos preco = 14x mais hipoteses por euro."""
+    from euromillions import totoloto as T
+
+    por_euro_toto = (1 / T.TOTAL_COMBINATIONS) / T.TICKET_PRICE_EUR
+    por_euro_em = config.JACKPOT.probability(12) / config.TICKET_PRICE_EUR
+    assert por_euro_toto / por_euro_em > 10
+
+
+def test_totoloto_filtros_seguem_os_dados_e_nao_o_folclore():
+    from euromillions import totoloto as T
+
+    assert not T.accepts(np.array([3, 7, 11, 19, 24]))     # datas
+    assert not T.accepts(np.array([5, 15, 25, 35, 45]))    # progressao
+    assert T.accepts(np.array([6, 41, 44, 45, 47]))        # consecutivos: OK
+
+
+def test_totoloto_prior_do_numero_da_sorte_e_transferido_nao_medido():
+    """
+    O prior vem do modelo das estrelas do EuroMilhoes. Esta limitacao tem de
+    ficar visivel: e exatamente o tipo de numero escrito a mao que ja errou
+    uma vez neste projeto.
+    """
+    from euromillions import totoloto as T
+
+    w = T.lucky_number_prior()
+    assert len(w) == 13
+    assert w[6] > w[11]      # 7 mais jogado que 12
+    assert w[12] == min(w)   # 13 assumido como o menos jogado
+    assert "transferida" in T.lucky_number_prior.__doc__.lower()
