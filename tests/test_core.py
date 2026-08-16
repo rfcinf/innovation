@@ -803,3 +803,50 @@ def test_totoloto_prior_do_numero_da_sorte_e_transferido_nao_medido():
     assert w[6] > w[11]      # 7 mais jogado que 12
     assert w[12] == min(w)   # 13 assumido como o menos jogado
     assert "transferida" in T.lucky_number_prior.__doc__.lower()
+
+
+def test_totoloto_dados_de_frequencia_sao_validados():
+    """
+    A soma das contagens tem de dar exatamente 5 x sorteios (numeros) e
+    1 x sorteios (Nº da Sorte). Se nao der, a extracao leu a tabela errada
+    e os dados nao servem — e a unica forma de o saber sem os ver a olho.
+    """
+    from euromillions import totoloto as T
+
+    freq = T.load_frequencies()
+    for periodo, d in freq.items():
+        n = d["sorteios"]
+        assert sum(d["numeros"]) == T.MAIN_PICK * n, periodo
+        assert abs(sum(d["sorte"]) - n) <= 1, periodo
+        assert len(d["numeros"]) == 49 and len(d["sorte"]) == 13
+
+
+def test_totoloto_segmentos_sao_disjuntos():
+    """
+    Os periodos da fonte sao cumulativos. Subtrai-los da segmentos disjuntos,
+    que e o que permite o teste de persistencia — comparar dois troços que
+    nao partilham sorteios.
+    """
+    from euromillions import totoloto as T
+
+    freq = T.load_frequencies()
+    antigo = T.segment(freq, "2011-03-16", "2022-01-01")
+    recente = T.segment(freq, "2022-01-01", None)
+    assert antigo["sorteios"] + recente["sorteios"] == freq["2011-03-16"]["sorteios"]
+    assert all(c >= 0 for c in antigo["numeros"])
+
+
+def test_totoloto_sem_vies_detetavel():
+    """
+    Resultado da analise: nenhum numero nem Nº da Sorte sobrevive a correcao
+    FDR, e os desvios nao persistem entre segmentos. Se algum dia isto
+    falhar, ha sinal novo a investigar — nao um teste partido.
+    """
+    from euromillions import totoloto as T
+
+    r = T.bias_battery(T.load_frequencies())
+    assert r["números 1-49"]["p"] > 0.05
+    assert r["Nº da Sorte 1-13"]["p"] > 0.05
+    assert int(r["tabelas"]["numeros"]["significativo_fdr5"].sum()) == 0
+    assert int(r["tabelas"]["sorte"]["significativo_fdr5"].sum()) == 0
+    assert r["persistencia_numeros"]["p_simulado"] > 0.05

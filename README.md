@@ -188,6 +188,7 @@ docs/
   07-correcoes.md        M1lhão, elasticidades medidas, uma hipótese falhada
   08-lacunas-e-padroes.md  repetições, coincidências, o mapa exato do espaço
   09-modelo-e-auditor.md   o modelo de produção e o sistema que o verifica
+  10-totoloto.md           Totoloto: estrutura validada e análise de vieses
 ```
 
 `pytest tests/ -q` → 65 testes. As probabilidades oficiais

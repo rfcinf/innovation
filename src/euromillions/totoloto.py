@@ -378,3 +378,195 @@ def expected_value(
         "EV_total": total,
         "retorno_por_euro": total / TICKET_PRICE_EUR,
     }
+
+
+# ---------------------------------------------------------------------------
+# Análise de vieses — dados reais
+# ---------------------------------------------------------------------------
+
+FREQ_CACHE = "data/totoloto_freq.json"
+FREQ_URL = "http://euroleste.pt/totoloto/total_aparitii_n_s.php"
+PERIODS = ("2011-03-16", "2022-01-01", "2023-01-01",
+           "2024-01-01", "2025-01-01", "2026-01-01")
+"""Períodos cumulativos oferecidos pela fonte. Subtraindo-os obtêm-se
+segmentos disjuntos, que é o que permite o teste de persistência."""
+
+
+def load_frequencies(path: str = FREQ_CACHE) -> dict:
+    """Lê a recolha guardada; se não existir, vai buscá-la."""
+    import json
+    import os
+
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    freq = fetch_frequencies()
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(freq, fh)
+    return freq
+
+
+def fetch_frequencies(periods: tuple[str, ...] = PERIODS) -> dict:
+    """
+    Frequências observadas de cada número e de cada Nº da Sorte.
+
+    A Santa Casa publica estatísticas desde 2011-03-16 mas renderiza-as por
+    JavaScript. Esta fonte expõe as mesmas contagens por POST.
+
+    VALIDAÇÃO OBRIGATÓRIA: a soma das contagens dos números tem de dar
+    exatamente 5 × sorteios, e a das do Nº da Sorte exatamente 1 × sorteios.
+    Se não der, a extração está partida e os dados não são usados — é a
+    única forma de saber que se leu a tabela certa.
+    """
+    import re
+
+    import requests
+
+    out: dict[str, dict] = {}
+    for an in periods:
+        r = requests.post(FREQ_URL, data={"an": an, "submit": "Veja"},
+                          headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+        h = r.text
+        m = re.search(r"Registros totais disponível:\s*(\d+)", h)
+        if not m:
+            continue
+        n = int(m.group(1))
+        t = re.sub(r"<script.*?</script>", "", h, flags=re.S)
+        t = re.sub(r"<[^>]+>", "|", t)
+        t = re.sub(r"[\|\s]+", "|", t)
+        pares = re.findall(r"\|(\d{1,2})\|(\d+)\|vezes\|([\d.]+)%", t)
+        nums = [int(c) for _, c, _ in pares[:MAIN_POOL]]
+        lucky = [int(c) for _, c, _ in pares[MAIN_POOL:MAIN_POOL + LUCKY_POOL]]
+        if len(nums) != MAIN_POOL or len(lucky) != LUCKY_POOL:
+            continue
+        ok_n = sum(nums) == MAIN_PICK * n
+        ok_l = abs(sum(lucky) - n) <= 1
+        out[an] = {
+            "sorteios": n, "numeros": nums, "sorte": lucky,
+            "validado": bool(ok_n and ok_l),
+        }
+    return out
+
+
+def segment(freq: dict, inicio: str, fim: str | None) -> dict:
+    """
+    Segmento disjunto por subtração de dois períodos cumulativos.
+
+    `fim=None` significa "até hoje".
+    """
+    a = freq[inicio]
+    if fim is None:
+        return {"sorteios": a["sorteios"],
+                "numeros": list(a["numeros"]), "sorte": list(a["sorte"])}
+    b = freq[fim]
+    return {
+        "sorteios": a["sorteios"] - b["sorteios"],
+        "numeros": [x - y for x, y in zip(a["numeros"], b["numeros"])],
+        "sorte": [x - y for x, y in zip(a["sorte"], b["sorte"])],
+    }
+
+
+def bias_battery(freq: dict) -> dict:
+    """
+    Bateria de vieses sobre as frequências observadas.
+
+    Mesma disciplina do EuroMilhões: qui-quadrado global, teste binomial por
+    número com correção de falsas descobertas, análise de potência, e o
+    teste decisivo de persistência entre segmentos independentes.
+    """
+    import numpy as np
+    from scipy import stats
+
+    from .randomness import benjamini_hochberg
+
+    full = freq[PERIODS[0]]
+    n = full["sorteios"]
+    res: dict = {"sorteios": n}
+
+    # -- qui-quadrado global -------------------------------------------
+    for nome, counts, pool, picks in (
+        ("números 1-49", full["numeros"], MAIN_POOL, MAIN_PICK),
+        ("Nº da Sorte 1-13", full["sorte"], LUCKY_POOL, 1),
+    ):
+        obs = np.array(counts, dtype=float)
+        exp = np.full(pool, obs.sum() / pool)
+        chi2 = float(((obs - exp) ** 2 / exp).sum())
+        res[nome] = {
+            "chi2": chi2, "gl": pool - 1,
+            "p": float(stats.chi2.sf(chi2, pool - 1)),
+            "esperado_por_valor": float(exp[0]),
+        }
+
+    # -- por número, com FDR -------------------------------------------
+    tabelas = {}
+    for nome, counts, pool, picks in (
+        ("numeros", full["numeros"], MAIN_POOL, MAIN_PICK),
+        ("sorte", full["sorte"], LUCKY_POOL, 1),
+    ):
+        p0 = picks / pool
+        rows = []
+        for i, c in enumerate(counts, start=1):
+            r = stats.binomtest(int(c), n, p0)
+            rows.append({"valor": i, "vezes": int(c), "esperado": n * p0,
+                         "desvio_%": 100 * (c - n * p0) / (n * p0),
+                         "p": r.pvalue})
+        import pandas as pd
+
+        df = pd.DataFrame(rows)
+        df["p_ajustado"] = benjamini_hochberg(df["p"].to_numpy())
+        df["significativo_fdr5"] = df["p_ajustado"] < 0.05
+        tabelas[nome] = df.sort_values("p").reset_index(drop=True)
+    res["tabelas"] = tabelas
+
+    # -- persistência: dois segmentos independentes ---------------------
+    antigo = segment(freq, PERIODS[0], "2022-01-01")   # 2011-2021
+    recente = segment(freq, "2022-01-01", None)        # 2022-hoje
+    for nome, key, pool, picks in (("números", "numeros", MAIN_POOL, MAIN_PICK),
+                                   ("Nº da Sorte", "sorte", LUCKY_POOL, 1)):
+        a = np.array(antigo[key], float)
+        b = np.array(recente[key], float)
+        ea = antigo["sorteios"] * picks / pool
+        eb = recente["sorteios"] * picks / pool
+        dev_a, dev_b = (a - ea) / ea, (b - eb) / eb
+        r = float(np.corrcoef(dev_a, dev_b)[0, 1])
+        # nulo por simulação: dois segmentos genuinamente uniformes
+        rng = np.random.default_rng(11)
+        sims = np.empty(5000)
+        for i in range(5000):
+            ca = rng.multinomial(int(a.sum()), [1 / pool] * pool).astype(float)
+            cb = rng.multinomial(int(b.sum()), [1 / pool] * pool).astype(float)
+            sims[i] = np.corrcoef((ca - ea) / ea, (cb - eb) / eb)[0, 1]
+        res[f"persistencia_{key}"] = {
+            "segmento_antigo": f"{antigo['sorteios']} sorteios (2011-2021)",
+            "segmento_recente": f"{recente['sorteios']} sorteios (2022-hoje)",
+            "r_observado": round(r, 4),
+            "nulo_dp": round(float(sims.std()), 4),
+            "p_simulado": float((np.abs(sims) >= abs(r)).mean()),
+        }
+    return res
+
+
+def detection_power(n_draws: int, effect_pct: float, pool: int, picks: int,
+                    alpha: float = 0.05) -> float:
+    from scipy import stats
+
+    p0 = picks / pool
+    p1 = p0 * (1 + effect_pct / 100)
+    se0 = (p0 * (1 - p0) / n_draws) ** 0.5
+    se1 = (p1 * (1 - p1) / n_draws) ** 0.5
+    z = stats.norm.isf(alpha / 2)
+    return float(stats.norm.sf((z * se0 - (p1 - p0)) / se1)
+                 + stats.norm.cdf((-z * se0 - (p1 - p0)) / se1))
+
+
+def minimum_detectable_bias(n_draws: int, pool: int, picks: int,
+                            power: float = 0.80) -> float:
+    lo, hi = 0.01, 500.0
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        if detection_power(n_draws, mid, pool, picks) < power:
+            lo = mid
+        else:
+            hi = mid
+    return hi

@@ -8,6 +8,7 @@ Interface de linha de comandos.
     python -m euromillions.cli valor [--jackpot 100e6]
     python -m euromillions.cli estrelas
     python -m euromillions.cli carteira
+    python -m euromillions.cli totoloto
     python -m euromillions.cli plano
     python -m euromillions.cli modelo
     python -m euromillions.cli auditoria
@@ -31,7 +32,8 @@ import numpy as np
 import pandas as pd
 
 from . import (audit, config, elasticity, ev, m1lhao, machines, model as mdl,
-               patterns, portfolio, quantum, randomness, stars, strategy)
+               patterns, portfolio, quantum, randomness, stars, strategy,
+               totoloto)
 from . import backtest as bt
 from . import dataset as ds
 from . import optimizer as opt
@@ -518,6 +520,69 @@ def cmd_plano(args) -> None:
     print("  e nenhum plano pode.")
 
 
+def cmd_totoloto(args) -> None:
+    import pandas as _pd
+
+    _hr("TOTOLOTO — ESTRUTURA (calculada de raiz)")
+    print(_pd.DataFrame(totoloto.structure_table()).to_string(index=False))
+    p = totoloto.probability_any_prize()
+    print(f"\n  P(algum prémio) = 1 em {1/p:.2f}")
+    print(f"  Santa Casa publica 1 em 7 → {'CONFERE' if abs(1/p-7)<0.2 else 'DIVERGE'}")
+    print("  (a Santa Casa não publica a probabilidade de cada escalão;")
+    print("   este confronto é a única forma de validar a estrutura assumida)")
+
+    _hr("TOTOLOTO vs EUROMILHÕES")
+    print(_pd.DataFrame(totoloto.compare_with_euromillions()).to_string(index=False))
+
+    freq = totoloto.load_frequencies()
+    r = totoloto.bias_battery(freq)
+
+    _hr(f"ANÁLISE DE VIESES — {r['sorteios']} sorteios desde 2011-03-16")
+    for k in ("números 1-49", "Nº da Sorte 1-13"):
+        d = r[k]
+        print(f"  {k:<18} χ² = {d['chi2']:7.2f} ({d['gl']} g.l.)   p = {d['p']:.4f}"
+              f"   esperado/valor = {d['esperado_por_valor']:.1f}")
+
+    _hr("VALORES MAIS EXTREMOS")
+    print("Números (de 49):")
+    print(r["tabelas"]["numeros"].head(5).to_string(index=False))
+    print(f"  significativos após FDR: "
+          f"{int(r['tabelas']['numeros']['significativo_fdr5'].sum())} de 49")
+    print("\nNº da Sorte (de 13):")
+    print(r["tabelas"]["sorte"].head(4).to_string(index=False))
+    print(f"  significativos após FDR: "
+          f"{int(r['tabelas']['sorte']['significativo_fdr5'].sum())} de 13")
+
+    _hr("O TESTE DECISIVO — os desvios persistem no tempo?")
+    for key, nome in (("numeros", "números 1-49"), ("sorte", "Nº da Sorte 1-13")):
+        d = r[f"persistencia_{key}"]
+        print(f"\n  {nome}")
+        print(f"    {d['segmento_antigo']}  vs  {d['segmento_recente']}")
+        print(f"    r = {d['r_observado']:+.4f}   dp do nulo = {d['nulo_dp']:.4f}"
+              f"   p = {d['p_simulado']:.4f}")
+    print("\n  Um viés físico é persistente por definição — vive no equipamento.")
+    print("  Ruído amostral não persiste. É este teste que separa os dois.")
+
+    _hr("POTÊNCIA — que tamanho de viés é que estes dados veriam?")
+    for n in (r["sorteios"], 5000, 20000):
+        m = totoloto.minimum_detectable_bias(n, totoloto.MAIN_POOL, totoloto.MAIN_PICK)
+        s_ = totoloto.minimum_detectable_bias(n, totoloto.LUCKY_POOL, 1)
+        print(f"  {n:6d} sorteios → números {m:5.1f}%   Nº da Sorte {s_:5.1f}%")
+
+    if args.chaves:
+        _hr(f"CHAVES SUGERIDAS ({args.chaves})")
+        src, rep = quantum.get_source(allow_network=not args.offline)
+        print(f"  entropia: {src.name} — {rep['veredicto']}\n")
+        for i, c in enumerate(totoloto.generate(args.chaves, entropy=src,
+                                                n_candidates=args.candidatos,
+                                                allow_network=not args.offline), 1):
+            nums = " ".join(f"{n:02d}" for n in c["numeros"])
+            print(f"  {i}.  {nums}   Nº da Sorte {c['numero_da_sorte']:2d}"
+                  f"   pop {c['popularidade_aprox']:.3f}")
+        print("\n  AVISO: a popularidade do Totoloto NÃO está medida — os filtros")
+        print("  são transferidos do modelo validado no EuroMilhões. Ver o módulo.")
+
+
 def cmd_valor(args) -> None:
     try:
         bd = ds.load_breakdown()
@@ -655,7 +720,7 @@ def cmd_jogar(args) -> None:
 def cmd_relatorio(args) -> None:
     for fn in (cmd_aleatoriedade, cmd_maquinas, cmd_popularidade, cmd_estrelas,
                cmd_elasticidade, cmd_m1lhao, cmd_padroes, cmd_plano, cmd_valor,
-               cmd_carteira,
+               cmd_carteira, cmd_totoloto,
                cmd_backtest, cmd_comparativo):
         try:
             fn(args)
@@ -697,6 +762,12 @@ def main(argv: list[str] | None = None) -> None:
 
     e = sub.add_parser("estrelas", help="popularidade medida das estrelas")
     e.set_defaults(func=cmd_estrelas)
+
+    tt = sub.add_parser("totoloto", help="estrutura, vieses e chaves do Totoloto")
+    tt.add_argument("--chaves", type=int, default=5)
+    tt.add_argument("--candidatos", type=int, default=3000)
+    tt.add_argument("--offline", action="store_true")
+    tt.set_defaults(func=cmd_totoloto)
 
     pl = sub.add_parser("plano", help="calendário e orçamento ótimos")
     pl.add_argument("--orcamento", type=float, default=520.0,
@@ -756,6 +827,9 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--bilhetes", type=int, default=5)
     r.add_argument("--seed", type=int, default=1)
     r.add_argument("--jackpot", type=float, default=60e6)
+    r.add_argument("--chaves", type=int, default=0)
+    r.add_argument("--candidatos", type=int, default=2000)
+    r.add_argument("--offline", action="store_true")
     r.set_defaults(func=cmd_relatorio)
 
     args = p.parse_args(argv)
