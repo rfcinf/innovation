@@ -1,0 +1,83 @@
+# Copie para config/profile.yaml e preencha com seus dados.
+# Este arquivo alimenta o preenchimento dos formulários e o contexto do Claude.
+
+personal:
+  full_name: "Maria Silva"
+  email: "maria@example.com"
+  phone: "+55 11 91234-5678"
+  city: "São Paulo"
+  state: "SP"
+  country: "Brasil"
+  linkedin_url: "https://www.linkedin.com/in/maria-silva"
+  portfolio_url: "https://github.com/maria-silva"
+
+# Caminho do currículo em PDF (usado nos campos de upload do Easy Apply).
+resume_path: "./resume.pdf"
+
+work_authorization:
+  # Países onde já tem autorização para trabalhar, sem visto adicional.
+  authorized_in: ["Brasil"]
+  requires_sponsorship: false
+  # Disponibilidade para mudança de cidade/país.
+  willing_to_relocate: false
+  notice_period_days: 30
+
+experience:
+  years_total: 8
+  current_title: "Engenheira de Software Sênior"
+  current_company: "Acme Tecnologia"
+  seniority: "senior"        # junior | mid | senior | staff | lead
+  # Anos por tecnologia. Usado para responder "quantos anos de experiência com X?".
+  skills:
+    python: 8
+    django: 5
+    postgresql: 6
+    aws: 4
+    docker: 5
+    kubernetes: 2
+    react: 3
+    typescript: 3
+  languages:
+    português: "nativo"
+    inglês: "avançado"
+    espanhol: "básico"
+  education:
+    - degree: "Bacharelado em Ciência da Computação"
+      institution: "Universidade de São Paulo"
+      year: 2016
+
+compensation:
+  currency: "BRL"
+  # Valor mensal esperado. Vários formulários pedem um número puro.
+  expected_monthly: 18000
+  expected_annual: 216000
+  # Se true, responde a faixa; se false, evita dar número e pede alinhamento.
+  disclose_expectation: true
+
+preferences:
+  # Contexto que o Claude usa para escrever cartas de apresentação.
+  summary: >
+    Engenheira de software com 8 anos de experiência em backend Python,
+    focada em sistemas distribuídos e APIs de alto tráfego. Liderei a
+    migração de um monolito Django para serviços em Kubernetes, reduzindo
+    o tempo de deploy de 40 para 6 minutos.
+  tone: "direto, específico, sem jargão corporativo"
+  # Idioma das respostas geradas. "auto" segue o idioma da vaga.
+  language: "auto"
+
+# Banco de respostas: consultado ANTES do Claude.
+# `match` é uma regex case-insensitive aplicada ao texto da pergunta.
+# Use para tudo que é fato objetivo e não deve variar entre candidaturas.
+answers:
+  - match: "(anos|years).*(experi).*(python)"
+    answer: "8"
+  - match: "(autoriza|authoriz|legally).*(trabalh|work)"
+    answer: "Sim"
+  - match: "(sponsor|patroc[ií]nio|visa)"
+    answer: "Não"
+  - match: "(pretens[ãa]o|expectativa|salary expectation|desired salary)"
+    answer: "R$ 18.000 mensais, negociável conforme escopo e benefícios."
+  - match: "(dispon[ií]vel|available).*(in[ií]cio|start)"
+    answer: "30 dias"
+  - match: "(ingl[êe]s|english).*(n[ií]vel|level|proficien)"
+    answer: "Avançado"

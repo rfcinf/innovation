@@ -1,0 +1,60 @@
+# Copie para config/search.yaml e ajuste.
+# Define o que buscar, como pontuar e quantas candidaturas permitir.
+
+queries:
+  - keywords: "Engenheiro de Software Python"
+    location: "Brasil"
+    remote: true            # filtra vagas remotas
+    easy_apply: true        # apenas vagas com Candidatura Simplificada
+    date_posted: "week"     # day | week | month | any
+    experience: ["mid", "senior"]
+
+  - keywords: "Backend Developer"
+    location: "São Paulo, Brasil"
+    remote: false
+    easy_apply: true
+    date_posted: "week"
+    experience: ["senior"]
+
+limits:
+  # Vagas candidatadas por execução do comando `apply`.
+  max_applications_per_run: 10
+  # Teto diário somado entre execuções. Protege a conta contra bloqueio.
+  max_applications_per_day: 20
+  # Vagas coletadas por query no comando `search`.
+  max_results_per_query: 50
+  # Pausa aleatória entre ações, em segundos.
+  delay_range: [4, 11]
+
+scoring:
+  # Só entra na fila quem passa desta nota (0.0 a 1.0).
+  min_score: 0.55
+  # Peso de cada sinal na nota final.
+  weights:
+    title_match: 0.35
+    skill_overlap: 0.40
+    seniority_match: 0.15
+    recency: 0.10
+
+filters:
+  # Se preenchido, o título precisa conter pelo menos um destes termos.
+  require_title_keywords: ["engineer", "engenheir", "developer", "desenvolvedor", "backend", "python"]
+  # Descarte imediato se o título contiver qualquer um destes.
+  exclude_title_keywords:
+    - "estágio"
+    - "intern"
+    - "trainee"
+    - ".net"
+    - "php"
+    - "sales"
+    - "vendas"
+  # Descarte por empresa (ex.: onde você já trabalha, ou consultorias que evita).
+  exclude_companies:
+    - "Acme Tecnologia"
+  # Termos que, se ausentes na descrição, derrubam a nota.
+  preferred_keywords: ["python", "django", "fastapi", "aws", "postgres", "kubernetes"]
+
+cover_letter:
+  # Gera carta com Claude quando o formulário pede (campo longo/opcional).
+  enabled: true
+  max_words: 180

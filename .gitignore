@@ -1,0 +1,20 @@
+# Dados pessoais e credenciais — nunca commitar
+config/profile.yaml
+config/search.yaml
+*.pdf
+*.docx
+
+# Estado do navegador (contém a sessão autenticada do LinkedIn)
+.browser-state/
+
+# Banco de dados de candidaturas e artefatos de execução
+data/
+screenshots/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
