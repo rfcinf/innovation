@@ -42,7 +42,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from . import config, ev, patterns, randomness, stars
+from . import config, ev, patterns, randomness, stars, totoloto
 from . import backtest as bt
 from . import dataset as ds
 from .popularity import fit_popularity_model
@@ -489,6 +489,98 @@ def hunt_gaps(rep: AuditReport, ctx: dict, n_sim: int = 4000) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# G. Totoloto
+# ---------------------------------------------------------------------------
+
+def audit_totoloto(rep: AuditReport) -> None:
+    """
+    Audita o segundo jogo com a mesma disciplina do primeiro.
+
+    Inclui a verificação que mais importa numa recolha por raspagem: a soma
+    das contagens tem de bater exatamente com 5 x sorteios (números) e
+    1 x sorteios (Nº da Sorte). Uma extração que leia a tabela errada produz
+    números plausíveis e falsos, e é a aritmética — não a inspeção visual —
+    que a apanha.
+    """
+    try:
+        freq = totoloto.load_frequencies()
+    except Exception as e:
+        rep.add(AVISO, "totoloto", "dados de frequência", f"indisponíveis: {e}", False)
+        return
+
+    problemas = []
+    for periodo, d in freq.items():
+        n = d["sorteios"]
+        if sum(d["numeros"]) != totoloto.MAIN_PICK * n:
+            problemas.append(f"{periodo}: soma dos números não bate")
+        if abs(sum(d["sorte"]) - n) > 1:
+            problemas.append(f"{periodo}: soma do Nº da Sorte não bate")
+    rep.add(
+        OK if not problemas else CRITICO, "totoloto",
+        "integridade aritmética da recolha",
+        "; ".join(problemas) if problemas else
+        f"{len(freq)} períodos, somas batem exatamente",
+        not problemas,
+    )
+
+    # A estrutura de escalões é reconstruída, não publicada. O único
+    # confronto possível é com o "1 em 7" que a Santa Casa divulga.
+    p = totoloto.probability_any_prize()
+    ok_est = abs(1 / p - 7.0) < 0.2
+    rep.add(
+        OK if ok_est else CRITICO, "totoloto",
+        "estrutura de escalões vs valor oficial",
+        f"P(algum prémio) = 1 em {1/p:.2f}; Santa Casa publica 1 em 7",
+        ok_est,
+    )
+
+    r = totoloto.bias_battery(freq)
+    for chave in ("números 1-49", "Nº da Sorte 1-13"):
+        d = r[chave]
+        ok = d["p"] > 0.01
+        rep.add(
+            OK if ok else CRITICO, "totoloto", f"uniformidade — {chave}",
+            f"χ² = {d['chi2']:.2f} ({d['gl']} g.l.), p = {d['p']:.4f}"
+            + ("" if ok else "  ← SINAL a investigar"),
+            ok,
+        )
+
+    for key, nome, total in (("numeros", "números", 49), ("sorte", "Nº da Sorte", 13)):
+        n_sig = int(r["tabelas"][key]["significativo_fdr5"].sum())
+        rep.add(
+            INFO if n_sig == 0 else AVISO, "totoloto",
+            f"valores individuais — {nome}",
+            f"{n_sig} de {total} após correção FDR", n_sig == 0,
+        )
+
+    for key, nome in (("numeros", "números"), ("sorte", "Nº da Sorte")):
+        d = r[f"persistencia_{key}"]
+        ok = d["p_simulado"] > 0.05
+        rep.add(
+            INFO if ok else CRITICO, "totoloto",
+            f"persistência dos desvios — {nome}",
+            f"r = {d['r_observado']:+.4f}, p = {d['p_simulado']:.4f}"
+            + ("" if ok else "  ← SINAL REAL"),
+            ok,
+        )
+
+    mdb = totoloto.minimum_detectable_bias(
+        r["sorteios"], totoloto.MAIN_POOL, totoloto.MAIN_PICK
+    )
+    rep.add(
+        INFO, "totoloto", "poder de deteção",
+        f"com {r['sorteios']} sorteios só se veria um viés acima de {mdb:.1f}%",
+    )
+
+    # A limitação que o utilizador tem de continuar a ver.
+    rep.add(
+        AVISO, "totoloto", "modelo de popularidade não medido",
+        "os filtros são transferidos do EuroMilhões; falta a quebra de "
+        "prémios por sorteio para os estimar aqui", False,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Execução completa
 # ---------------------------------------------------------------------------
 
@@ -501,6 +593,7 @@ def run_audit(n_sim: int = 4000, skip_slow: bool = False) -> tuple[AuditReport, 
     audit_assumptions(rep)
     if not skip_slow:
         audit_claims(rep, ctx)
+        audit_totoloto(rep)
     gaps = hunt_gaps(rep, ctx, n_sim=n_sim) if not skip_slow else pd.DataFrame()
     rep.finished = dt.datetime.now().isoformat(timespec="seconds")
     return rep, gaps
