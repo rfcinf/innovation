@@ -850,3 +850,138 @@ def test_totoloto_sem_vies_detetavel():
     assert int(r["tabelas"]["numeros"]["significativo_fdr5"].sum()) == 0
     assert int(r["tabelas"]["sorte"]["significativo_fdr5"].sum()) == 0
     assert r["persistencia_numeros"]["p_simulado"] > 0.05
+
+
+# ---------------------------------------------------------------------------
+# Simulacao da noite de sorteio
+# ---------------------------------------------------------------------------
+
+def test_simulacao_bate_com_a_esperanca_analitica():
+    """
+    A media simulada tem de convergir para N x EV(1 aposta), qualquer que
+    seja a sobreposicao entre bilhetes: a esperanca e linear e a correlacao
+    entre bilhetes nao a altera.
+
+    Este e o teste que apanha um erro na matriz de premios ou na contagem
+    de acertos — os dois sitios onde uma simulacao vetorizada se engana
+    silenciosamente e continua a produzir numeros plausiveis.
+    """
+    from euromillions import portfolio, simulacao as S
+
+    prizes = {t.label: 10.0 * (i + 1) for i, t in enumerate(config.TIERS)}
+    prizes["5+2"] = 0.0
+    tk = [([1, 2, 3, 4, 5], [1, 2]), ([6, 7, 8, 9, 10], [3, 4]),
+          ([11, 12, 13, 14, 15], [5, 6])]
+
+    P = S.prize_matrix(prizes, 0.0)
+    r = S.simulate_night(tk, P, n_sim=120_000, seed=3)
+    teor = portfolio.expected_winnings_analytic(3, prizes)
+
+    z = abs(r["ganho_medio"] - teor) / r["ganho_medio_se"]
+    assert z < 4, f"media simulada {r['ganho_medio']} vs analitica {teor} ({z:.1f} EP)"
+
+
+def test_carteira_disjunta_ganha_a_formula_de_independencia():
+    """
+    Bilhetes com numeros disjuntos tem P(nada) MENOR do que apostas
+    independentes: nao podem falhar todos da mesma maneira. Se esta
+    desigualdade inverter, a cobertura deixou de ser calculada.
+    """
+    from euromillions import portfolio, simulacao as S
+
+    prizes = {t.label: 1.0 for t in config.TIERS}
+    tk = [(list(range(1 + 5 * i, 6 + 5 * i)), [1, 2]) for i in range(5)]
+    r = S.simulate_night(tk, S.prize_matrix(prizes, 0.0), n_sim=120_000, seed=5)
+
+    assert r["p_nada"] < portfolio.probability_no_prize_independent(5)
+
+
+def test_imposto_do_jackpot_aplica_se_depois_da_partilha():
+    """
+    O Imposto do Selo incide sobre o que CADA vencedor recebe. Aplica-lo ao
+    premio bruto antes de dividir sobrestimaria a carga fiscal.
+
+    Com lambda grande o premio parte-se em fatias pequenas; se alguma fatia
+    descer abaixo de EUR 5.000 fica isenta, e o cheque esperado tem de ser
+    ESTRITAMENTE MAIOR do que a versao que tributa antes de dividir.
+    """
+    from euromillions import simulacao as S
+
+    j = 111e6
+    correto = S.jackpot_check(j, lam=0.5)["cheque_esperado"]
+    errado = config.net_prize(j) * ev.expected_share_factor(0.5)
+    assert correto > errado
+
+
+def test_cheque_do_jackpot_limites():
+    """lambda->0 devolve o premio liquido inteiro; lambda grande divide-o."""
+    from euromillions import simulacao as S
+
+    j = 111e6
+    sem_concorrencia = S.jackpot_check(j, lam=1e-9)
+    assert sem_concorrencia["cheque_esperado"] == pytest.approx(
+        config.net_prize(j), rel=1e-6)
+    assert sem_concorrencia["p_sozinho"] == pytest.approx(1.0, abs=1e-6)
+
+    muita = S.jackpot_check(j, lam=5.0)
+    assert muita["cheque_esperado"] < 0.30 * config.net_prize(j)
+    assert muita["p_sozinho"] < 0.01
+
+
+def test_tabela_de_escaloes_conta_acertos_esperados():
+    """
+    A coluna 1_em e 1/(n x p). Para 5 apostas, o jackpot tem de dar
+    139.838.160 / 5 — e a soma das contribuicoes tem de reproduzir o EV.
+    """
+    from euromillions import simulacao as S
+
+    prizes = {t.label: 0.0 for t in config.TIERS}
+    prizes["5+0"] = 1000.0
+    tab = S.tier_table(5, prizes, jackpot_value=0.0)
+
+    jack = tab[tab["escalão"] == "5+2"].iloc[0]
+    assert jack["1_em"] == pytest.approx(139_838_160 / 5, rel=1e-6)
+
+    p5 = config.TIER_BY_LABEL["5+0"].probability(12)
+    total = tab["contrib_EV_€"].sum()
+    assert total == pytest.approx(5 * p5 * 1000.0, rel=1e-9)
+
+
+def test_concentrar_e_dispersar_puxam_em_sentidos_contrarios():
+    """
+    Cobertura e P(recuperar o custo) sao objetivos OPOSTOS, e o sistema tem
+    de continuar a saber disso.
+
+    Concentrar (bilhetes que partilham quase todos os numeros) piora
+    P(nada) e melhora muito P(recuperar o custo), porque os bilhetes ganham
+    em bloco. Dispersar faz o contrario. O valor esperado e igual nos dois
+    casos — a esperanca e linear e nao ve correlacao.
+
+    Se algum dia este teste falhar nas duas desigualdades ao mesmo tempo, e
+    porque a simulacao deixou de captar a correlacao entre bilhetes.
+    """
+    from euromillions import simulacao as S
+
+    prizes = {t.label: 0.0 for t in config.TIERS}
+    prizes["2+0"] = 4.0
+    prizes["2+1"] = 6.0
+    prizes["3+0"] = 10.0
+    P = S.prize_matrix(prizes, 0.0)
+
+    dispersa = [(list(range(1 + 5 * i, 6 + 5 * i)), [1, 2]) for i in range(5)]
+    concentrada = S.concentrated_portfolio([1, 2, 3, 4, 5], [1, 2], 5)
+
+    n_disp = len(set().union(*[set(t[0]) for t in dispersa]))
+    n_conc = len(set().union(*[set(t[0]) for t in concentrada]))
+    assert n_disp == 25 and n_conc <= 10
+
+    d = S.simulate_night(dispersa, P, n_sim=150_000, seed=9)
+    c = S.simulate_night(concentrada, P, n_sim=150_000, seed=9)
+
+    assert d["p_nada"] < c["p_nada"]
+    assert c["p_recupera_custo"] > d["p_recupera_custo"]
+
+    # ... e mesmo assim o ganho medio e o mesmo, dentro do ruido
+    z = abs(d["ganho_medio"] - c["ganho_medio"]) / np.hypot(
+        d["ganho_medio_se"], c["ganho_medio_se"])
+    assert z < 4, f"medias divergem em {z:.1f} erros-padrao"

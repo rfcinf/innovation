@@ -121,6 +121,7 @@ python -m euromillions.cli fetch --breakdown   # recolha (~15 min)
 python -m euromillions.cli relatorio           # corre tudo
 
 python -m euromillions.cli modelo              # modelo consolidado + recomendação
+python -m euromillions.cli simulacao           # distribuição completa de uma noite
 python -m euromillions.cli auditoria           # auditar o sistema e caçar lacunas
 
 python -m euromillions.cli aleatoriedade       # bateria de testes
@@ -176,6 +177,7 @@ src/euromillions/
   quantum.py       QRNG (ANU / LfD) com certificação da fonte
   optimizer.py     filtros ditados pelos dados + EV e cobertura em conjunto
   backtest.py      walk-forward sobre sorteios reais + validação fora da amostra
+  simulacao.py     distribuição de uma noite: corpo simulado + cauda exata
   cli.py           interface
 
 docs/
@@ -189,9 +191,10 @@ docs/
   08-lacunas-e-padroes.md  repetições, coincidências, o mapa exato do espaço
   09-modelo-e-auditor.md   o modelo de produção e o sistema que o verifica
   10-totoloto.md           Totoloto: estrutura validada e análise de vieses
+  11-simulacao.md          a noite inteira, em vez do valor esperado
 ```
 
-`pytest tests/ -q` → 65 testes. As probabilidades oficiais
+`pytest tests/ -q` → 85 testes. As probabilidades oficiais
 (1 em 139.838.160) são calculadas de raiz e verificadas.
 
 ---

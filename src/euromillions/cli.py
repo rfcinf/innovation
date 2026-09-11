@@ -18,6 +18,7 @@ Interface de linha de comandos.
     python -m euromillions.cli comparativo
     python -m euromillions.cli backtest
     python -m euromillions.cli jogar [--bilhetes 5] [--jackpot 100e6]
+    python -m euromillions.cli simulacao [--jackpot 111e6] [--tamanhos 1,2,5,10,20]
     python -m euromillions.cli relatorio
 """
 
@@ -32,8 +33,8 @@ import numpy as np
 import pandas as pd
 
 from . import (audit, config, elasticity, ev, m1lhao, machines, model as mdl,
-               patterns, portfolio, quantum, randomness, stars, strategy,
-               totoloto)
+               patterns, portfolio, quantum, randomness, simulacao, stars,
+               strategy, totoloto)
 from . import backtest as bt
 from . import dataset as ds
 from . import optimizer as opt
@@ -451,6 +452,180 @@ def cmd_modelo(args) -> None:
         print(m.to_json())
 
 
+def cmd_simulacao(args) -> None:
+    tamanhos = [int(x) for x in args.tamanhos.split(",")]
+    ref = args.bilhetes
+
+    _hr("MODELO")
+    m = mdl.EuroMillionsModel.fit()
+    print(m.describe())
+
+    # Enche-se o reservatório quântico de uma vez. Deixar que se esvazie a
+    # meio da otimização faz com que cada recarga vá à rede — 1 KB por
+    # pedido, dezenas de pedidos, e a otimização passa a ser dominada por
+    # latência em vez de cálculo. A partir daqui consome-se em modo local:
+    # o que sobrar degrada para os.urandom, e a proveniência regista a
+    # mistura exata em vez de a esconder.
+    src = quantum.EntropySource()
+    src.refill(args.entropia, allow_network=not args.offline)
+    print(f"  entropia: {src.name}")
+
+    _hr(f"A CONSTRUIR CARTEIRAS — {', '.join(map(str, tamanhos))} apostas")
+    carteiras: dict[str, list] = {}
+    saved = dict(ev.TIER_ELASTICITY)
+    try:
+        ev.TIER_ELASTICITY.update(m.elasticities)
+        for n in tamanhos:
+            # opt.optimize diretamente, e não m.recommend: esta última corre
+            # uma simulação de 40 mil noites em ciclo de Python que aqui se
+            # deitaria fora — a distribuição é calculada abaixo, vetorizada.
+            tks, _ = opt.optimize(
+                m.popularity, src, n_tickets=n, jackpot_eur=args.jackpot,
+                sales=m.sales_estimate, tier_prizes=m.tier_prizes,
+                n_candidates=args.candidatos, allow_network=False,
+                star_model=m.star_model, ev_m1lhao=m.ev_m1lhao,
+            )
+            carteiras[f"otimizada ×{n}"] = tks
+            cov = portfolio.coverage_score([(t.mains, t.stars) for t in tks])
+            print(f"  ×{n:<3} popularidade "
+                  f"{np.mean([t.popularity for t in tks]):.3f}   "
+                  f"cobertura {cov['numeros_distintos']}/50")
+    finally:
+        ev.TIER_ELASTICITY.clear()
+        ev.TIER_ELASTICITY.update(saved)
+
+    # A mistura real de fontes, sem a esconder: o que o reservatório
+    # quântico não cobriu veio do CSPRNG do sistema.
+    from collections import Counter
+    mix = Counter(p.split("<- ")[1] for p in src.provenance())
+    print("\n  proveniência da entropia:")
+    for origem, n in mix.items():
+        print(f"    {n:>3} recarga(s)  {origem}")
+
+    # Referência honesta: o mesmo dinheiro gasto ao acaso.
+    rng = np.random.default_rng(args.seed)
+    pool = np.arange(1, config.MAIN_POOL + 1)
+    aleatoria = [
+        (sorted(rng.choice(pool, 5, replace=False).tolist()),
+         sorted(rng.choice(np.arange(1, 13), 2, replace=False).tolist()))
+        for _ in range(ref)
+    ]
+    carteiras[f"ao acaso ×{ref}"] = aleatoria
+
+    # O extremo oposto da dispersão: mesma base, varia um número. Serve
+    # para mostrar que "cobertura" e "recuperar o custo" puxam em sentidos
+    # contrários, e que a escolha entre as duas não é estatística.
+    melhor = carteiras[f"otimizada ×{min(tamanhos)}"][0]
+    concentrada = simulacao.concentrated_portfolio(
+        melhor.mains, melhor.stars, ref, popularity_model=m.popularity)
+    carteiras[f"concentrada ×{ref}"] = concentrada
+
+    # As carteiras que não vêm do otimizador não trazem popularidade. Se
+    # ficassem com o valor por omissão (1.0) apareceriam com um cheque de
+    # jackpot ~5% menor do que o real, e a comparação estaria viciada
+    # contra elas — a concentrada é construída a partir do MELHOR bilhete
+    # e é tudo menos popular.
+    def _pops(tks):
+        return [
+            float(m.popularity.predict_popularity(np.array(mains))[0])
+            * opt.star_pair_popularity(tuple(strs), 12, m.star_model)
+            for mains, strs in tks
+        ]
+
+    pops = {f"ao acaso ×{ref}": _pops(aleatoria),
+            f"concentrada ×{ref}": _pops(concentrada)}
+
+    alvo = carteiras[f"otimizada ×{ref}"]
+    r = simulacao.frame_night(
+        alvo, args.jackpot, m.sales_estimate, m.tier_prizes,
+        ev_m1lhao=m.ev_m1lhao, n_sim=args.sim, seed=args.seed,
+    )
+    c = r["corpo"]
+
+    _hr(f"A CARTEIRA — {ref} apostas, €{r['custo']:.2f}, jackpot "
+        f"€{args.jackpot/1e6:.0f}M")
+    for i, t in enumerate(alvo, 1):
+        print(f"  {i}  {' '.join(f'{x:02d}' for x in t.mains)}   "
+              f"★ {' '.join(f'{x:02d}' for x in t.stars)}   "
+              f"popularidade {t.popularity:.3f}")
+
+    _hr(f"O CORPO DA DISTRIBUIÇÃO — {c['n_sim']:,} noites simuladas")
+    print(f"  P(não ganhar nada)        {c['p_nada']:.4f}  ± {c['p_nada_se']:.4f}")
+    print(f"  P(ganhar alguma coisa)    {c['p_algum_premio']:.4f}")
+    print(f"  P(recuperar os €{r['custo']:.2f})     {c['p_recupera_custo']:.4f}")
+    print(f"  P(ganhar ≥ €25)           {c['p_ge_25']:.4f}")
+    print(f"  P(ganhar ≥ €100)          {c['p_ge_100']:.5f}")
+    print(f"  P(ganhar ≥ €1.000)        {c['p_ge_1000']:.6f}")
+    print("\n  percentis do ganho da noite:")
+    for q, v in c["percentis"].items():
+        print(f"    p{q:<5} €{v:,.2f}")
+    d = c["dado_que_ganha"]
+    print(f"\n  DADO QUE ganha alguma coisa ({d['n']:,} das {c['n_sim']:,} noites):")
+    print(f"    mediana €{d['mediana']:,.2f}   média €{d['media']:,.2f}   "
+          f"p90 €{d['p90']:,.2f}   p99 €{d['p99']:,.2f}   máx €{d['max']:,.2f}")
+
+    _hr("A CAUDA — combinatória exata, onde a simulação não chega")
+    tab = r["escaloes"].copy()
+    tab["prob_%"] = tab["prob_%"].map(lambda x: f"{x:.6f}")
+    tab["prémio_€"] = tab["prémio_€"].map(lambda x: f"{x:,.2f}")
+    tab["contrib_EV_€"] = tab["contrib_EV_€"].map(lambda x: f"{x:.4f}")
+    tab["1_em"] = tab["1_em"].map(lambda x: f"{x:,.0f}")
+    print(tab.to_string(index=False))
+    print("\n  'exclusivo' = com números disjuntos, dois bilhetes não podem")
+    print("  ganhar este escalão na mesma noite. Aí n × p é exato, não é")
+    print("  aproximação.")
+
+    ch = r["cheque"]
+    _hr("O CHEQUE — o que a cauda paga mesmo")
+    print(f"  jackpot anunciado           €{args.jackpot:,.0f}")
+    print(f"  líquido se ficar sozinho    €{ch['liquido_se_sozinho']:,.0f}"
+          f"   (Imposto do Selo: −€{args.jackpot - ch['liquido_se_sozinho']:,.0f})")
+    print(f"  λ (concorrência esperada)   {ch['lambda_medio']:.4f}")
+    print(f"  P(sozinho | acertar)        {ch['p_sozinho_dado_que_acerta']:.4f}")
+    print(f"  cheque esperado             €{ch['cheque_esperado']:,.0f}")
+    print(f"\n  1 em {ch['1_em_jackpot']/1e6:,.1f}M de acertar no jackpot")
+    print(f"  1 em {ch['1_em_jackpot_sozinho']/1e6:,.1f}M de acertar E ficar sozinho")
+
+    _hr("COMPARAÇÃO ENTRE ORÇAMENTOS")
+    sw = simulacao.sweep(carteiras, args.jackpot, m.sales_estimate,
+                         m.tier_prizes, ev_m1lhao=m.ev_m1lhao,
+                         n_sim=args.sim // 2, seed=args.seed,
+                         popularities=pops)
+    print(sw.to_string(index=False))
+    print("\n  1_em_jackpot e 1_em_sozinho estão em milhões.")
+    print("  Repare em '€_por_€': é praticamente constante. Nenhum orçamento")
+    print("  torna o jogo favorável — o que muda é a forma da distribuição.")
+
+    _hr("O TRADE-OFF QUE NÃO SE PODE OTIMIZAR NOS DOIS SENTIDOS")
+    disp = sw[sw["carteira"] == f"otimizada ×{ref}"].iloc[0]
+    conc = sw[sw["carteira"] == f"concentrada ×{ref}"].iloc[0]
+    print(f"  {'':<22}{'dispersa':>12}{'concentrada':>14}")
+    for rot, col in [("números distintos", "nºs"),
+                     ("popularidade", "popul."),
+                     ("P(não ganhar nada)", "P(nada)"),
+                     ("P(recuperar o custo)", "P(recupera)"),
+                     ("P(ganhar ≥ €100)", "P(≥€100)"),
+                     ("cheque se acertar (€M)", "cheque_€M"),
+                     ("EV (€)", "EV_€")]:
+        print(f"  {rot:<22}{disp[col]:>12}{conc[col]:>14}")
+    print("\n  a carteira concentrada, para quem preferir esta forma:")
+    for i, (mm, ss) in enumerate(concentrada, 1):
+        print(f"    {i}  {' '.join(f'{x:02d}' for x in mm)}   "
+              f"★ {' '.join(f'{x:02d}' for x in ss)}")
+
+    print("\n  O valor esperado é praticamente o mesmo: a esperança é linear")
+    print("  e não vê correlação entre bilhetes. O que muda é tudo o resto.")
+    print("  Dispersar = ganhar pouco mais vezes. Concentrar = ganhar mais")
+    print("  raramente, e mais de cada vez. Não há resposta estatística para")
+    print("  qual é melhor — há uma preferência, e agora está quantificada.")
+
+    _hr("LEITURA")
+    print("  O valor esperado é o número que menos informa: cai num ponto")
+    print("  onde a distribuição quase nunca aterra. O que se compra com a")
+    print("  otimização é a FORMA da distribuição — menos noites a zero, e")
+    print("  um cheque maior no caso raro em que a cauda acontece.")
+
+
 def cmd_auditoria(args) -> None:
     _hr("AUDITORIA DO SISTEMA")
     print("  A verificar dados, modelos, deriva, suposições, afirmações e lacunas...\n")
@@ -783,6 +958,18 @@ def main(argv: list[str] | None = None) -> None:
     mo.add_argument("--avaliar", type=str, default=None,
                     help="avaliar uma aposta: 'n1,n2,n3,n4,n5,e1,e2'")
     mo.set_defaults(func=cmd_modelo)
+
+    si = sub.add_parser("simulacao", help="distribuição completa de uma noite")
+    si.add_argument("--jackpot", type=float, default=111e6)
+    si.add_argument("--bilhetes", type=int, default=5, help="carteira detalhada")
+    si.add_argument("--tamanhos", type=str, default="1,2,5,10,20")
+    si.add_argument("--sim", type=int, default=400_000)
+    si.add_argument("--candidatos", type=int, default=3000)
+    si.add_argument("--seed", type=int, default=7)
+    si.add_argument("--entropia", type=int, default=65536,
+                    help="bytes quânticos a recolher antes de otimizar")
+    si.add_argument("--offline", action="store_true")
+    si.set_defaults(func=cmd_simulacao)
 
     au = sub.add_parser("auditoria", help="auditar o sistema e caçar lacunas")
     au.add_argument("--sim", type=int, default=4000)
